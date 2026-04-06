@@ -292,7 +292,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
                 qpos[adr + 0] = x
                 qpos[adr + 1] = y
                 qpos[adr + 2] = z
-                qpos[adr + 3 : adr + 7] = quat
+                # qpos[adr + 3 : adr + 7] = quat
             else:
                 # Set position di luar jangkauan
                 qpos[adr + 0] = 6.0
