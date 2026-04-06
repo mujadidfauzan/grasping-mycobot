@@ -1,0 +1,7 @@
+numpy<2.0.0
+gymnasium[mujoco]
+stable-baselines3[extra]
+shimmy>=1.0
+shimmy[gym-v21]
+tensorboard
+matplotlib
