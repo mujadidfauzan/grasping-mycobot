@@ -5,7 +5,7 @@ logs/*
 venv/
 env/
 .env/
-*env*/
+myenv/
 
 # Ignore python cache
 **/__pycache__/
