@@ -7,6 +7,7 @@ ENV_NAMES = [
     "GraspingEnv",
     "GraspingEnvV1",
     "GraspingEnvV2",
+    "GraspingEnvV3",
 ]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -91,7 +92,7 @@ def main() -> None:
         ) from exc
 
     try:
-        from source.envs import GraspingEnv, GraspingEnvV1, GraspingEnvV2
+        from source.envs import GraspingEnv, GraspingEnvV1, GraspingEnvV2, GraspingEnvV3
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "Failed to import environments from source.envs. Run this script from the project root "
@@ -102,6 +103,7 @@ def main() -> None:
         "GraspingEnv": GraspingEnv,
         "GraspingEnvV1": GraspingEnvV1,
         "GraspingEnvV2": GraspingEnvV2,
+        "GraspingEnvV3": GraspingEnvV3,
     }
 
     xml_path = Path(args.xml_file).expanduser()

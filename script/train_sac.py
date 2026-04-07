@@ -9,12 +9,13 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
 from torch import nn
 
-from source.envs import GraspingEnv, GraspingEnvV1, GraspingEnvV2
+from source.envs import GraspingEnv, GraspingEnvV1, GraspingEnvV2, GraspingEnvV3
 
 ENV_REGISTRY = {
     "GraspingEnv": GraspingEnv,
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
+    "GraspingEnvV3": GraspingEnvV3,
 }
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -53,6 +54,9 @@ class InfoTensorboardCallback(BaseCallback):
                     "reward_dist_bonus",
                     "reward_target_bonus",
                     "upright",
+                    "object_yaw",
+                    "sampled_object_yaw",
+                    "applied_object_yaw",
                 ]:
                     if key in info0:
                         self.logger.record(f"custom/{key}", float(info0[key]))

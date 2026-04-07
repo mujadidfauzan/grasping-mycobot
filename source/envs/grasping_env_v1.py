@@ -176,14 +176,6 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
 
         self.do_simulation(target, self.frame_skip)
 
-        if self.current_step % 250 == 0 or self.current_step == 1:
-            print(
-                f"Step: {self.current_step}, "
-                f"Objek Pos: {[f'{p:.3f}' for p in self._get_active_obj_task_pos()]}, "
-                f"Target Pos: {[f'{p:.3f}' for p in self.data.site('target').xpos]}, "
-                f"Objek Aktif: {self.active_obj_name}"
-            )
-
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
         info = reward_info
@@ -346,6 +338,14 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         ee_xmat = self.data.site("attachment_site").xmat
         ee_quat = np.zeros(4, dtype=np.float64)
         mujoco.mju_mat2Quat(ee_quat, ee_xmat)
+
+        if self.current_step % 250 == 0 or self.current_step == 1:
+            print(
+                f"Step: {self.current_step}, "
+                f"Objek Pos: {[f'{p:.3f}' for p in self._get_active_obj_task_pos()]}, "
+                f"Target Pos: {[f'{p:.3f}' for p in self.data.site('target').xpos]}, "
+                f"Objek Aktif: {self.active_obj_name}"
+            )
 
         # Target
         target_pos = self.data.site("target").xpos
