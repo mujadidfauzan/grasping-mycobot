@@ -26,7 +26,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         frame_skip: int = 5,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         reward_dist_weight: float = 2,
-        reward_dist_target_weight: float = 1,
+        reward_dist_target_weight: float = 2,
         **kwargs,
     ):
         utils.EzPickle.__init__(
@@ -96,16 +96,16 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         self.gripL_dadr = int(self.model.jnt_dofadr[self.gripL_jid])
         self.gripR_dadr = int(self.model.jnt_dofadr[self.gripR_jid])
 
-        dummy_obs = self._get_obs()
-        self.observation_space = Box(
-            low=-np.inf, high=np.inf, shape=dummy_obs.shape, dtype=np.float32
-        )
-
         self.gripper_state = "open"
 
         self.max_episode_steps = 500
         self.current_step = 0
         self.success_counter = 0
+
+        dummy_obs = self._get_obs()
+        self.observation_space = Box(
+            low=-np.inf, high=np.inf, shape=dummy_obs.shape, dtype=np.float32
+        )
 
         self.metadata = {
             "render_modes": [
@@ -143,6 +143,12 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         adr = info["qposadr"]
         return self.data.qpos[adr + 3 : adr + 7].copy()
 
+    def _get_active_obj_onehot(self):
+        onehot = np.zeros(len(self.object_names), dtype=np.float32)
+        idx = self.object_names.index(self.active_obj_name)
+        onehot[idx] = 1.0
+        return onehot
+
     def _yaw_to_quat(self, yaw):
         half = yaw / 2.0
         return np.array([np.cos(half), 0.0, 0.0, np.sin(half)], dtype=np.float64)
@@ -165,7 +171,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
                 self.data.site("attachment_site").xpos.copy()
                 - self._get_active_obj_task_pos()
             )
-            < 0.03
+            < 0.02
         ):
             self.gripper_ctrl(close=True, target=target)
         else:
@@ -179,7 +185,12 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
         info = reward_info
-        terminated = self.success_counter >= 10
+        terminated = (self.success_counter >= 10) or (
+            np.linalg.norm(
+                self._get_active_obj_task_pos() - self.data.site("target").xpos.copy()
+            )
+            >= 1.0
+        )
         truncated = self.current_step >= self.max_episode_steps
 
         if self.render_mode == "human":
@@ -195,14 +206,14 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         reward_dist = -dist * self._reward_dist_weight
         reward_dist_tanh = 1.0 - float(np.tanh(float(dist) / 0.10))
         reward_dist_bonus = 0.0
-        if dist < 0.01:
-            reward_dist_bonus = 3.0
+        if dist < 0.015:
+            reward_dist_bonus = 4.0
 
         target_dist = np.linalg.norm(target_pos - obj_pos)
         reward_target = -target_dist * self._reward_dist_target_weight
         reward_target_tanh = 1.0 - float(np.tanh(float(target_dist) / 0.10))
         reward_target_bonus = 0.0
-        if target_dist < 0.01:
+        if target_dist < 0.015:
             reward_target_bonus = 5.0
 
         obj_quat = self._get_active_obj_quat()
@@ -226,7 +237,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         stay_bonus = 0.0
         if target_dist < 0.02 and obj_vel < 0.01:
             self.success_counter += 1
-            stay_bonus = 2.0
+            stay_bonus = 8.0
         else:
             self.success_counter = 0
 
@@ -237,7 +248,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
             "control_penalty": float(control_penalty),
             "reward_target": float(reward_target),
             "reward_target_tanh": float(reward_target_tanh),
-            "reward_orient": float(reward_orient),
+            # "reward_orient": float(reward_orient),
             "stay_bonus": float(stay_bonus),
             "reward_dist_bonus": float(reward_dist_bonus),
             "reward_target_bonus": float(reward_target_bonus),
@@ -246,12 +257,13 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         reward = (
             reward_dist
             + reward_dist_tanh
-            # + touch_bonus
             + control_penalty
             + reward_target
-            # + reward_lift
             + reward_target_tanh
-            + reward_orient
+            # + reward_orient
+            + stay_bonus
+            + reward_dist_bonus
+            + reward_target_bonus
         )
 
         return reward, reward_info
@@ -262,6 +274,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         qvel = self.init_qvel.copy()
 
         self.active_obj_name = self.np_random.choice(self.object_names)
+        # self.active_obj_name = "triangle"
         active_info = self.object_info[self.active_obj_name]
 
         # Random XY
@@ -270,8 +283,12 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         z = 0.025
 
         # random yaw
-        yaw = self.np_random.uniform(-np.pi, np.pi)
+        yaw = self.np_random.uniform(-1.05, 1.05)
+        # yaw = -0.2
+
+        # print(f"Yaw : {yaw}")
         quat = self._yaw_to_quat(yaw)
+        identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
         # reset semua object
         for obj_name in self.object_names:
@@ -284,7 +301,7 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
                 qpos[adr + 0] = x
                 qpos[adr + 1] = y
                 qpos[adr + 2] = z
-                # qpos[adr + 3 : adr + 7] = quat
+                qpos[adr + 3 : adr + 7] = quat
             else:
                 # Set position di luar jangkauan
                 qpos[adr + 0] = 6.0
@@ -332,27 +349,34 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
         # Object
         obj_pos = self._get_active_obj_task_pos()
         obj_quat = self._get_active_obj_quat()
+        # print("Obj Pos: ", obj_pos)
+        # print(f"Obj Quat :{[f'{p:.3f}' for p in obj_quat]}")
 
         # End effector
         ee_pos = self.data.site("attachment_site").xpos
         ee_xmat = self.data.site("attachment_site").xmat
         ee_quat = np.zeros(4, dtype=np.float64)
         mujoco.mju_mat2Quat(ee_quat, ee_xmat)
-
-        if self.current_step % 250 == 0 or self.current_step == 1:
-            print(
-                f"Step: {self.current_step}, "
-                f"Objek Pos: {[f'{p:.3f}' for p in self._get_active_obj_task_pos()]}, "
-                f"Target Pos: {[f'{p:.3f}' for p in self.data.site('target').xpos]}, "
-                f"Objek Aktif: {self.active_obj_name}"
-            )
+        # print("EE Pos: ", ee_pos)
+        # print("EE Quat: ", ee_quat)
 
         # Target
         target_pos = self.data.site("target").xpos
 
-        # Relative positions
+        # # Relative positions
         rel_obj_ee = obj_pos - ee_pos
         rel_obj_target = obj_pos - target_pos
+        onehot = self._get_active_obj_onehot()
+
+        # if self.current_step % 100 == 0 or self.current_step == 1:
+        #     print(
+        #         f"Step: {self.current_step}, "
+        #         f"Objek Pos: {[f'{p:.3f}' for p in obj_pos]}, "
+        #         f"Target Pos: {[f'{p:.3f}' for p in target_pos]}, "
+        #         f"EE Pos: {[f'{p:.3f}' for p in ee_pos]}, "
+        #         f"EE Quat: {[f'{p:.3f}' for p in ee_quat]}, "
+        #         f"Objek Aktif: {self.active_obj_name}"
+        #     )
 
         obs = np.concatenate(
             [
@@ -360,12 +384,13 @@ class GraspingEnvV1(MujocoEnv, utils.EzPickle):
                 robot_qvel,
                 gripper_state,
                 obj_pos,
-                obj_quat,
+                # obj_quat,
                 target_pos,
                 rel_obj_ee,
                 rel_obj_target,
                 ee_pos,
                 ee_quat,
+                onehot,
             ]
         )
 

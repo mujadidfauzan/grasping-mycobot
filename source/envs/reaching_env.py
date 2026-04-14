@@ -8,11 +8,13 @@ from gymnasium import utils
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
 
+from .config_export import capture_init_config, export_env_config
+
 DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0}
 DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_lift.xml"
 
 
-class GraspingEnv(MujocoEnv, utils.EzPickle):
+class ReachingEnv(MujocoEnv, utils.EzPickle):
     metadata = {
         "render_modes": [
             "human",
@@ -35,24 +37,27 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
         reward_target_tanh_weight: float = 3.0,
         reward_target_orient_weight: float = 1.0,
         reward_grasp_bonus: float = 4.0,
+        reward_target_bonus: float = 8.0,
+        reward_stay_bonus: float = 12.0,
         control_penalty_weight: float = 0.001,
         success_distance: float = 0.02,
         success_angle_deg: float = 25.0,
         success_steps_required: int = 10,
         max_episode_steps: int = 300,
         arm_action_scale: float = 0.01,
-        object_x_range: tuple[float, float] = (0.20, 0.27),
+        object_x_range: tuple[float, float] = (0.15, 0.27),
         object_y_range: tuple[float, float] = (-0.10, 0.10),
         object_z: float = 0.025,
         object_yaw_limit_rad: float = 1.05,
         lift_height: float = 0.10,
-        grasp_close_distance: float = 0.015,
+        grasp_close_distance: float = 0.035,
         grasp_release_distance: float = 0.055,
         grasp_close_angle_deg: float = 25.0,
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         **kwargs,
     ):
+        self._init_config = capture_init_config(locals())
         utils.EzPickle.__init__(
             self,
             xml_file,
@@ -66,6 +71,8 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
             reward_target_tanh_weight,
             reward_target_orient_weight,
             reward_grasp_bonus,
+            reward_target_bonus,
+            reward_stay_bonus,
             control_penalty_weight,
             success_distance,
             success_angle_deg,
@@ -93,6 +100,8 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
         self._reward_target_orient_weight = float(reward_target_orient_weight)
         self._reward_grasp_bonus = float(reward_grasp_bonus)
+        self._reward_target_bonus = float(reward_target_bonus)
+        self._reward_stay_bonus = float(reward_stay_bonus)
         self._control_penalty_weight = float(control_penalty_weight)
         self._success_distance = float(success_distance)
         self._success_angle_rad = np.deg2rad(float(success_angle_deg))
@@ -238,7 +247,7 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
 
     @staticmethod
     def _quat_to_yaw(quat: np.ndarray) -> float:
-        quat = GraspingEnv._normalize_quat(quat)
+        quat = ReachingEnv._normalize_quat(quat)
         w, x, y, z = quat
         siny_cosp = 2.0 * (w * z + x * y)
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
@@ -404,7 +413,9 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
             np.sum(np.square(action))
         )
 
-        reward_target_bonus = 8.0 if target_dist < self._success_distance else 0.0
+        reward_target_bonus = (
+            self._reward_target_bonus if target_dist < self._success_distance else 0.0
+        )
 
         success_now = (
             target_dist < self._success_distance
@@ -412,7 +423,7 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
         )
         if success_now:
             self.success_counter += 1
-            stay_bonus = 12.0
+            stay_bonus = self._reward_stay_bonus
         else:
             self.success_counter = 0
             stay_bonus = 0.0
@@ -507,7 +518,7 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
 
         return self._get_obs()
 
-    def _get_obs(self) -> np.ndarray:
+    def _get_obs_components(self) -> list[tuple[str, np.ndarray]]:
         qpos = self.data.qpos
         qvel = self.data.qvel
 
@@ -535,33 +546,35 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
 
         lift_height = float(obj_pos[2] - self.initial_obj_site_pos[2])
 
-        obs = np.concatenate(
-            [
-                robot_qpos,
-                robot_qvel,
-                gripper_state,
-                ee_pos,
-                ee_quat,
-                obj_pos,
-                obj_quat,
-                target_pos,
-                target_quat,
-                ee_obj_pos_error,
-                ee_obj_rot_error,
-                obj_target_pos_error,
-                np.array(
-                    [
-                        np.linalg.norm(ee_obj_pos_error),
-                        np.linalg.norm(ee_obj_rot_error),
-                        np.linalg.norm(obj_target_pos_error),
-                        lift_height,
-                        float(self.grasp_latched),
-                    ],
-                    dtype=np.float64,
-                ),
-            ]
-        )
+        return [
+            ("robot_qpos", robot_qpos),
+            ("robot_qvel", robot_qvel),
+            ("gripper_state", gripper_state),
+            ("ee_pos", ee_pos),
+            ("ee_quat", ee_quat),
+            ("object_pos", obj_pos),
+            ("object_quat", obj_quat),
+            ("target_pos", target_pos),
+            ("target_quat", target_quat),
+            ("ee_object_pos_error", ee_obj_pos_error),
+            ("ee_object_rot_error", ee_obj_rot_error),
+            ("object_target_pos_error", obj_target_pos_error),
+            ("ee_object_dist", np.array([np.linalg.norm(ee_obj_pos_error)])),
+            ("ee_object_rot_error_norm", np.array([np.linalg.norm(ee_obj_rot_error)])),
+            ("object_target_dist", np.array([np.linalg.norm(obj_target_pos_error)])),
+            ("lift_height", np.array([lift_height])),
+            ("grasp_latched", np.array([float(self.grasp_latched)])),
+        ]
+
+    def _get_obs(self) -> np.ndarray:
+        obs = np.concatenate([
+            np.asarray(component, dtype=np.float64)
+            for _, component in self._get_obs_components()
+        ])
         return obs.astype(np.float32)
+
+    def export_config(self) -> dict:
+        return export_env_config(self, self._get_obs_components())
 
     def get_debug_state(self) -> dict:
         ee_pos, ee_quat = self._get_ee_pose()

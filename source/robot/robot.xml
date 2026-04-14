@@ -73,7 +73,7 @@
                             <geom type="mesh" mesh="link6" pos="0 0 -0.038" />
 
                             <body name="link6_flange" pos="0 0.0456 0" quat="0.707105 -0.707108 0 0">
-                            <site name="attachment_site" pos="0 0.0 0.075" size="0.005" rgba="1 0 0 1" group="1"/>
+                            <site name="attachment_site" pos="0 0.0 0.075" size="0.005" rgba="1 0 0 1" group="1" quat="0 0.707 -0.707 0"/>
                             <inertial pos="0.000969617 3.10966e-05 0.0070873" quat="0.997515 -0.0019461 0.0697529 -0.00976369" mass="0.3" diaginertia="0.00103948 0.00103651 0.00100478" />
                             <joint name="link6output_to_link6" axis="0 0 1" range="-3.14 3.14159" />
                             <geom pos="0 0 -0.012" type="mesh" mesh="flange" class="visualgeom" />
