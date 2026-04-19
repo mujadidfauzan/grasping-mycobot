@@ -879,9 +879,9 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         if terminated_ee_obj_far:
             print("Terminated")
 
-        print(
-            f"EE-Obj Dist: {reward_info['ee_object_dist']:.3f}, Target Dist: {reward_info['object_target_dist']:.3f}"
-        )
+        # print(
+        #     f"EE-Obj Dist: {reward_info['ee_object_dist']:.3f}, Target Dist: {reward_info['object_target_dist']:.3f}"
+        # )
 
         if self.render_mode == "human":
             self.render()
