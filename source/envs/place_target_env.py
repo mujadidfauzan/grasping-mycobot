@@ -60,7 +60,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         max_episode_steps: int = 300,
         arm_action_scale: float = 0.01,
         gripper_action_scale: float = 0.003,
-        gripper_command_threshold: float = 0.0,
+        gripper_command_threshold: float = -0.01,
         target_x_range: tuple[float, float] = (0.15, 0.27),
         target_y_range: tuple[float, float] = (-0.10, 0.10),
         target_place_z: float = 0.001,
@@ -504,9 +504,12 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         ctrl[-2:] = self._gripper_open_target
 
     def _apply_gripper_command(self, ctrl: np.ndarray, command: float) -> None:
-        if float(command) >= self._gripper_command_threshold:
+        # print(f"Applying gripper command : {command:.3f}")
+        if float(command) <= self._gripper_command_threshold:
+            # print(f"Closed")
             self._set_closed_gripper_target(ctrl)
         else:
+            # print(f"Open")
             self._set_open_gripper_target(ctrl)
 
     def _update_gripper_state_from_target(self, target: np.ndarray) -> None:
@@ -519,7 +522,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
 
         legacy_shape = (int(self.model.nu),)
         if action.shape == legacy_shape:
-            gripper_command = float(np.mean(action[-2:]))
+            gripper_command = float(action[-2])
             compact_action = np.concatenate(
                 [action[: self._arm_ctrl_dim], np.array([gripper_command])]
             )
@@ -850,7 +853,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         target_ctrl[: self._arm_ctrl_dim] += (
             self._arm_action_scale * action[: self._arm_ctrl_dim]
         )
-        self._apply_gripper_command(target_ctrl, action[-1])
+        self._apply_gripper_command(target_ctrl, action[-2])
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
         self._update_gripper_state_from_target(target_ctrl)
         self._disable_grasp_constraints()
@@ -873,6 +876,12 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         truncated = self.current_step >= self.max_episode_steps
         reward_info["terminated_success"] = int(terminated_success)
         reward_info["terminated_ee_obj_far"] = int(terminated_ee_obj_far)
+        if terminated_ee_obj_far:
+            print("Terminated")
+
+        print(
+            f"EE-Obj Dist: {reward_info['ee_object_dist']:.3f}, Target Dist: {reward_info['object_target_dist']:.3f}"
+        )
 
         if self.render_mode == "human":
             self.render()

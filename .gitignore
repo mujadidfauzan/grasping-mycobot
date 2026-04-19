@@ -1,5 +1,7 @@
 logs
 logs/*
+logs_eval
+logs_eval/*
 
 # Ignore environment
 venv/
