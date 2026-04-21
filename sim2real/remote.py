@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import json
 import socket
 import time
 
+import numpy as np
+
 
 class MyCobotRemote:
-    """UDP client for communicating with a remote MyCobot robot arm."""
-
     DEFAULT_PORT = 5005
-    DEFAULT_TIMEOUT = 0.1
-    DEFAULT_ACK_TIMEOUT = 0.5
-    DEFAULT_SETTLE_TIMEOUT = 4.0
-    DEFAULT_POLL_INTERVAL = 0.05
+    DEFAULT_TIMEOUT = 2.0
+    DEFAULT_ACK_TIMEOUT = 5.0
+    DEFAULT_SETTLE_TIMEOUT = 20.0
+    DEFAULT_POLL_INTERVAL = 0.2
     NUM_JOINTS = 6
     RESPONSE_TYPES = {
         "GET_STATE": "STATE",
@@ -24,41 +26,27 @@ class MyCobotRemote:
         self.addr = (ip, port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(timeout)
-
-        # Last known good state (fallback when communication fails)
-        self._last_angles: list[float] = [0.0] * self.NUM_JOINTS
-        self._last_coords: list[float] = [0.0] * self.NUM_JOINTS
         self._next_seq = 0
+        self._last_angles_deg: list[float] = [0.0] * self.NUM_JOINTS
+        self._last_coords: list[float] = [0.0] * self.NUM_JOINTS
 
     def _send(
         self,
         command: str,
         data=None,
         *,
-        expect_response: bool = False,
         timeout: float | None = None,
     ) -> dict | None:
-        """Send a UDP command and return the parsed response (or None on failure)."""
         message = json.dumps({"command": command, "data": data}).encode()
         original_timeout = self.sock.gettimeout()
+        expected_response = self.RESPONSE_TYPES.get(command)
+
         try:
             self.sock.sendto(message, self.addr)
-            if not expect_response and command != "GET_STATE":
-                return {}
-
-            deadline = None if timeout is None else time.monotonic() + float(timeout)
-            expected_response = self.RESPONSE_TYPES.get(command)
+            self.sock.settimeout(original_timeout if timeout is None else float(timeout))
 
             while True:
-                if deadline is None:
-                    self.sock.settimeout(original_timeout)
-                else:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0.0:
-                        return None
-                    self.sock.settimeout(remaining)
-
-                raw, _ = self.sock.recvfrom(1024)
+                raw, _ = self.sock.recvfrom(4096)
                 response = json.loads(raw.decode())
                 if (
                     expected_response is None
@@ -70,42 +58,43 @@ class MyCobotRemote:
         finally:
             self.sock.settimeout(original_timeout)
 
-    def update_state(self) -> bool:
-        """
-        Fetch angles + coords in ONE UDP round-trip and cache them.
-        Call this ONCE per control loop, then read .angles and .coords directly
-        to avoid multiple blocking network calls per iteration.
-        """
-        state = self._send("GET_STATE", expect_response=True) or {}
-        updated = False
+    def update_state(self, timeout: float | None = None) -> bool:
+        response = self._send("GET_STATE", timeout=timeout)
+        if not response or not response.get("ok"):
+            return False
 
-        if isinstance(state.get("angles"), list):
-            self._last_angles = state["angles"]
-            updated = True
-        if isinstance(state.get("coords"), list):
-            self._last_coords = state["coords"]
-            updated = True
+        angles = response.get("angles")
+        coords = response.get("coords")
+        if isinstance(angles, list) and len(angles) == self.NUM_JOINTS:
+            self._last_angles_deg = [float(value) for value in angles]
+        if isinstance(coords, list) and len(coords) == self.NUM_JOINTS:
+            self._last_coords = [float(value) for value in coords]
 
-        return updated
+        return True
+
+    @property
+    def angles_deg(self) -> list[float]:
+        return self._last_angles_deg
+
+    @property
+    def angles_rad(self) -> list[float]:
+        return np.deg2rad(np.asarray(self._last_angles_deg, dtype=np.float64)).tolist()
 
     @property
     def angles(self) -> list[float]:
-        """Last cached joint angles in degrees."""
-        print(f"Current angles: {self._last_angles}")
-        return self._last_angles
+        return self.angles_deg
 
     @property
     def coords(self) -> list[float]:
-        """Last cached end-effector coords [x, y, z, rx, ry, rz]."""
         return self._last_coords
 
-    # Keep these for backward compatibility — but note each fires a UDP call
     def get_angles(self) -> list[float]:
         self.update_state()
-        return self._last_angles
+        return self.angles_deg
 
     def get_coords(self) -> list[float]:
-        return self._last_coords  # reuse state already fetched by update_state()
+        self.update_state()
+        return self.coords
 
     @staticmethod
     def _max_joint_error_deg(current: list[float], target: list[float]) -> float:
@@ -117,23 +106,76 @@ class MyCobotRemote:
 
     def wait_until_angles_reached(
         self,
-        angles: list[float],
+        angles_deg: list[float],
         *,
         tolerance_deg: float = 2.0,
         timeout: float = DEFAULT_SETTLE_TIMEOUT,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> bool:
-        """Block until the cached joint state is close to the requested target."""
-        target = [float(angle) for angle in angles]
         deadline = time.monotonic() + float(timeout)
+        target = [float(value) for value in angles_deg]
 
         while time.monotonic() <= deadline:
-            self.update_state()
-            if self._max_joint_error_deg(self._last_angles, target) <= tolerance_deg:
-                return True
+            if self.update_state(timeout=poll_interval):
+                if self._max_joint_error_deg(self._last_angles_deg, target) <= tolerance_deg:
+                    return True
             time.sleep(poll_interval)
 
         return False
+
+    def send_angles_deg(
+        self,
+        angles_deg: list[float],
+        speed: int = 20,
+        *,
+        wait: bool = False,
+        ack_timeout: float = DEFAULT_ACK_TIMEOUT,
+        settle_timeout: float = DEFAULT_SETTLE_TIMEOUT,
+        tolerance_deg: float = 2.0,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+    ) -> bool:
+        target = [float(value) for value in angles_deg]
+        seq = self._next_seq
+        self._next_seq += 1
+
+        response = self._send(
+            "SET_ANGLES",
+            {"angles": target, "speed": int(speed), "seq": seq},
+            timeout=ack_timeout,
+        )
+        if not response or not response.get("ok"):
+            return False
+
+        if wait:
+            return self.wait_until_angles_reached(
+                target,
+                tolerance_deg=tolerance_deg,
+                timeout=settle_timeout,
+                poll_interval=poll_interval,
+            )
+        return True
+
+    def send_angles_rad(
+        self,
+        angles_rad: list[float],
+        speed: int = 20,
+        *,
+        wait: bool = False,
+        ack_timeout: float = DEFAULT_ACK_TIMEOUT,
+        settle_timeout: float = DEFAULT_SETTLE_TIMEOUT,
+        tolerance_deg: float = 2.0,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+    ) -> bool:
+        angles_deg = np.rad2deg(np.asarray(angles_rad, dtype=np.float64)).tolist()
+        return self.send_angles_deg(
+            angles_deg,
+            speed=speed,
+            wait=wait,
+            ack_timeout=ack_timeout,
+            settle_timeout=settle_timeout,
+            tolerance_deg=tolerance_deg,
+            poll_interval=poll_interval,
+        )
 
     def send_angles(
         self,
@@ -141,42 +183,28 @@ class MyCobotRemote:
         speed: int = 20,
         *,
         wait: bool = False,
-        tolerance_deg: float = 2.0,
         ack_timeout: float = DEFAULT_ACK_TIMEOUT,
         settle_timeout: float = DEFAULT_SETTLE_TIMEOUT,
+        tolerance_deg: float = 2.0,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> bool:
-        """Send target joint angles and optionally block until the target is reached."""
-        target = [float(angle) for angle in angles]
-        seq = self._next_seq
-        self._next_seq += 1
-
-        response = self._send(
-            "SET_ANGLES",
-            {"angles": target, "speed": int(speed), "seq": seq},
-            expect_response=True,
-            timeout=ack_timeout,
-        )
-        if not response or not response.get("ok") or response.get("seq") != seq:
-            return False
-
-        if not wait:
-            return True
-
-        return self.wait_until_angles_reached(
-            target,
+        return self.send_angles_deg(
+            angles,
+            speed=speed,
+            wait=wait,
+            ack_timeout=ack_timeout,
+            settle_timeout=settle_timeout,
             tolerance_deg=tolerance_deg,
-            timeout=settle_timeout,
             poll_interval=poll_interval,
         )
 
-    def set_gripper_state(self, state: int, speed: int = 50) -> bool:
-        """Set gripper state: 0 = open, 1 = closed."""
+    def set_gripper_state(
+        self, state: int, speed: int = 50, timeout: float = DEFAULT_ACK_TIMEOUT
+    ) -> bool:
         response = self._send(
             "SET_GRIPPER",
             {"state": int(state), "speed": int(speed)},
-            expect_response=True,
-            timeout=self.DEFAULT_ACK_TIMEOUT,
+            timeout=timeout,
         )
         return bool(response and response.get("ok"))
 

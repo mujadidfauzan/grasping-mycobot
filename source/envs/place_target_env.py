@@ -50,22 +50,24 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         reward_target_weight: float = 3.0,
         reward_target_tanh_weight: float = 1.0,
+        reward_target_orient_weight: float = 0.8,
         reward_target_bonus: float = 10.0,
         reward_stay_bonus: float = 16.0,
         reward_drop_penalty: float = 12.0,
         control_penalty_weight: float = 0.001,
-        success_distance: float = 0.015,
+        success_distance: float = 0.03,
+        success_angle_deg: float = 20.0,
         success_steps_required: int = 10,
         terminate_ee_obj_distance: float = 0.05,
         max_episode_steps: int = 300,
         arm_action_scale: float = 0.01,
         gripper_action_scale: float = 0.003,
         gripper_command_threshold: float = -0.01,
-        target_x_range: tuple[float, float] = (0.15, 0.27),
-        target_y_range: tuple[float, float] = (-0.10, 0.10),
+        target_x_range: tuple[float, float] = (0.19, 0.25),
+        target_y_range: tuple[float, float] = (-0.05, 0.05),
         target_place_z: float = 0.001,
         target_z_range: tuple[float, float] | None = None,
-        target_place_yaw_range: tuple[float, float] = (-np.pi, np.pi),
+        target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
         target_height_above_place: float = 0.0,
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
@@ -93,11 +95,13 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             default_camera_config,
             reward_target_weight,
             reward_target_tanh_weight,
+            reward_target_orient_weight,
             reward_target_bonus,
             reward_stay_bonus,
             reward_drop_penalty,
             control_penalty_weight,
             success_distance,
+            success_angle_deg,
             success_steps_required,
             terminate_ee_obj_distance,
             max_episode_steps,
@@ -158,11 +162,13 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
 
         self._reward_target_weight = float(reward_target_weight)
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
+        self._reward_target_orient_weight = float(reward_target_orient_weight)
         self._reward_target_bonus = float(reward_target_bonus)
         self._reward_stay_bonus = float(reward_stay_bonus)
         self._reward_drop_penalty = float(reward_drop_penalty)
         self._control_penalty_weight = float(control_penalty_weight)
         self._success_distance = float(success_distance)
+        self._success_angle_rad = np.deg2rad(float(success_angle_deg))
         self._success_steps_required = int(success_steps_required)
         self._terminate_ee_obj_distance = float(terminate_ee_obj_distance)
         if self._terminate_ee_obj_distance <= 0.0:
@@ -263,11 +269,6 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             "triangle": "tri_place",
             "cylinder": "cyl_place",
         }
-        self.place_joint_name_by_object = {
-            "box": "cube_place_joint",
-            "triangle": "tri_place_joint",
-            "cylinder": "cyl_place_joint",
-        }
         self.place_site_name_by_object = {
             "box": "cube_place_site",
             "triangle": "tri_place_site",
@@ -281,28 +282,20 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         self.place_info: dict[str, dict[str, int | str]] = {}
         for obj_name in self.object_names:
             body_name = self.place_name_by_object[obj_name]
-            joint_name = self.place_joint_name_by_object[obj_name]
             site_name = self.place_site_name_by_object[obj_name]
             geom_name = self.place_geom_name_by_object[obj_name]
 
             body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-            joint_id = mujoco.mj_name2id(
-                self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
-            )
             site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
             geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
 
             self.place_info[obj_name] = {
                 "body_name": body_name,
-                "joint_name": joint_name,
                 "site_name": site_name,
                 "geom_name": geom_name,
                 "body_id": body_id,
-                "joint_id": joint_id,
                 "site_id": site_id,
                 "geom_id": geom_id,
-                "qposadr": int(self.model.jnt_qposadr[joint_id]),
-                "dofadr": int(self.model.jnt_dofadr[joint_id]),
             }
 
         self.place_geom_rgba = {
@@ -585,10 +578,8 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             return 3
         return 1
 
-    def _set_place_joints_in_state(
+    def _set_place_poses_in_model(
         self,
-        qpos: np.ndarray,
-        qvel: np.ndarray,
         active_place_pos: np.ndarray,
         active_place_quat: np.ndarray,
     ) -> None:
@@ -597,19 +588,17 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
 
         for index, obj_name in enumerate(self.object_names):
             info = self.place_info[obj_name]
-            qposadr = int(info["qposadr"])
-            dofadr = int(info["dofadr"])
+            body_id = int(info["body_id"])
 
             if obj_name == self.active_obj_name:
-                qpos[qposadr : qposadr + 3] = active_place_pos
-                qpos[qposadr + 3 : qposadr + 7] = active_place_quat
+                self.model.body_pos[body_id] = active_place_pos
+                self.model.body_quat[body_id] = active_place_quat
             else:
-                qpos[qposadr : qposadr + 3] = np.array(
+                self.model.body_pos[body_id] = np.array(
                     [2.0 + index, 2.0, 0.2],
                     dtype=np.float64,
                 )
-                qpos[qposadr + 3 : qposadr + 7] = identity_quat
-            qvel[dofadr : dofadr + 6] = 0.0
+                self.model.body_quat[body_id] = identity_quat
 
     def _ensure_grasp_policy_loaded(self) -> None:
         if self._grasp_env is not None and self._grasp_policy is not None:
@@ -786,9 +775,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             )
 
         self.active_obj_name = str(snapshot["active_object"])
-        self._set_place_joints_in_state(
-            qpos,
-            qvel,
+        self._set_place_poses_in_model(
             self.sampled_target_place_pos,
             self.sampled_target_place_quat,
         )
@@ -853,7 +840,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         target_ctrl[: self._arm_ctrl_dim] += (
             self._arm_action_scale * action[: self._arm_ctrl_dim]
         )
-        self._apply_gripper_command(target_ctrl, action[-2])
+        self._apply_gripper_command(target_ctrl, action[-1])
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
         self._update_gripper_state_from_target(target_ctrl)
         self._disable_grasp_constraints()
@@ -924,17 +911,20 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         reward_target_tanh = (
             1.0 - float(np.tanh(target_dist / 0.05))
         ) * self._reward_target_tanh_weight
+        reward_target_orient = -target_angle * self._reward_target_orient_weight
         control_penalty = -self._control_penalty_weight * float(
             np.sum(np.square(action))
         )
 
-        reward_target_bonus = (
-            self._reward_target_bonus if target_dist < self._success_distance else 0.0
+        target_pose_aligned = bool(
+            target_dist < self._success_distance
+            and target_angle < self._success_angle_rad
         )
+        reward_target_bonus = self._reward_target_bonus if target_pose_aligned else 0.0
         drop_penalty = -self._reward_drop_penalty if terminated_ee_obj_far else 0.0
         # print("Drop Penalty: ", drop_penalty)
 
-        success_now = target_dist < self._success_distance
+        success_now = target_pose_aligned
         if success_now:
             self.success_counter += 1
             stay_bonus = self._reward_stay_bonus
@@ -945,6 +935,7 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         reward = (
             reward_target
             + reward_target_tanh
+            + reward_target_orient
             + reward_target_bonus
             + stay_bonus
             + drop_penalty
@@ -959,7 +950,9 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             "object_target_rot_error": target_angle,
             "reward_target": float(reward_target),
             "reward_target_tanh": float(reward_target_tanh),
+            "reward_target_orient": float(reward_target_orient),
             "reward_target_bonus": float(reward_target_bonus),
+            "target_pose_aligned": int(target_pose_aligned),
             "stay_bonus": float(stay_bonus),
             "drop_penalty": float(drop_penalty),
             "control_penalty": float(control_penalty),
@@ -1024,15 +1017,15 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
         qpos = self.data.qpos
         qvel = self.data.qvel
 
-        first_place_qposadr = min(
-            int(info["qposadr"]) for info in self.place_info.values()
+        first_object_qposadr = min(
+            int(info["qposadr"]) for info in self.object_info.values()
         )
-        first_place_dofadr = min(
-            int(info["dofadr"]) for info in self.place_info.values()
+        first_object_dofadr = min(
+            int(info["dofadr"]) for info in self.object_info.values()
         )
 
-        robot_qpos = qpos[:first_place_qposadr]
-        robot_qvel = qvel[:first_place_dofadr]
+        robot_qpos = qpos[:first_object_qposadr]
+        robot_qvel = qvel[:first_object_dofadr]
         gripper_qpos = qpos[[self.gripL_qadr, self.gripR_qadr]].copy()
         gripper_qvel = qvel[[self.gripL_dadr, self.gripR_dadr]].copy()
         gripper_ctrl = self.data.ctrl[-2:].copy()
@@ -1158,6 +1151,8 @@ class PlaceTargetEnv(MujocoEnv, utils.EzPickle):
             "obj_target_rot_error": obj_target_rot_error,
             "obj_target_dist": float(np.linalg.norm(obj_target_pos_error)),
             "obj_target_angle_rad": float(np.linalg.norm(obj_target_rot_error)),
+            "success_angle_rad": float(self._success_angle_rad),
+            "success_angle_deg": float(np.rad2deg(self._success_angle_rad)),
             "target_height_above_place": float(self._target_height_above_place),
             "object_yaw": float(self._quat_to_yaw(obj_quat)),
             "sampled_object_yaw": float(self.sampled_object_yaw),

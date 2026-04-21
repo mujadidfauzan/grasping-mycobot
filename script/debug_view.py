@@ -10,7 +10,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
-ENV_NAMES = ["GraspingEnvV2", "PlaceTargetEnv", "ReachingEnv"]
+ENV_NAMES = ["GraspingEnvV2", "PlaceAboveTargetEnv", "PlaceTargetEnv", "ReachingEnv"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -234,7 +234,7 @@ def resolve_frame_option(mujoco, frame_name: str):
 
 
 def resolve_default_xml_path(env_name: str) -> Path:
-    if env_name == "PlaceTargetEnv":
+    if env_name in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
         return OBJECT_PLACE_XML_PATH
     return OBJECT_LIFT_XML_PATH
 
@@ -254,9 +254,9 @@ def resolve_xml_path(env_name: str, xml_file_arg: str | None) -> Path:
 
 def main() -> None:
     args = parse_args()
-    if args.env == "PlaceTargetEnv" and not args.grasp_model:
+    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"} and not args.grasp_model:
         raise ValueError(
-            "PlaceTargetEnv requires --grasp-model so reset can start from the trained grasping policy state."
+            f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
 
     try:
@@ -267,10 +267,16 @@ def main() -> None:
             "mujoco is not installed. Install dependencies with: pip install -r requirements.txt"
         ) from exc
 
-    from source.envs import GraspingEnvV2, PlaceTargetEnv, ReachingEnv
+    from source.envs import (
+        GraspingEnvV2,
+        PlaceAboveTargetEnv,
+        PlaceTargetEnv,
+        ReachingEnv,
+    )
 
     env_registry = {
         "GraspingEnvV2": GraspingEnvV2,
+        "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
         "ReachingEnv": ReachingEnv,
     }
@@ -278,7 +284,7 @@ def main() -> None:
     xml_path = resolve_xml_path(args.env, args.xml_file)
 
     env_kwargs = {}
-    if args.env == "PlaceTargetEnv":
+    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,

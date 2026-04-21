@@ -50,7 +50,6 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
     <body name="cube_place" pos="0.23 0.10 0.0">
-      <freejoint name="cube_place_joint"/>
       <geom
         name="cube_place_geom"
         type="mesh"
@@ -70,7 +69,6 @@
     </body>
 
     <body name="tri_place" pos="0.23 0.00 0.0">
-      <freejoint name="tri_place_joint"/>
       <geom
         name="tri_place_geom"
         type="mesh"
@@ -89,7 +87,6 @@
     </body>
 
     <body name="cyl_place" pos="0.23 -0.10 0.0">
-      <freejoint name="cyl_place_joint"/>
       <geom
         name="cyl_place_geom"
         type="mesh"

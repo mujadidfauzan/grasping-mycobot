@@ -15,14 +15,13 @@ from sim2real.vision import AprilTagPose
 # Defaults
 # ------------------------------------------------------------------
 
-DEFAULT_ROBOT_IP = "10.16.121.76"
+DEFAULT_ROBOT_IP = "10.244.4.108"
 DEFAULT_MODEL_PATH = (
-    "/home/fauzan/Mujoco/Skripsi/logs/models/GraspingEnv/"
-    "SAC_26_02_2026_14_27_49/sac_lift_800000_steps.zip"
+    "/home/fauzan/Grasping_Skripsi/source/envs/sac_lift_1450000_steps.zip"
 )
 DEFAULT_CAM_INDEX = 2
-DEFAULT_BASE_TAG_ID = 12
-DEFAULT_OBJ_TAG_ID = 1
+DEFAULT_BASE_TAG_ID = 6
+DEFAULT_OBJ_TAG_ID = 0
 DEFAULT_TARGET_POS = np.array([0.18, 0.0, 0.15], dtype=np.float64)
 
 # MuJoCo actuator limits from source/robot/robot.xml
@@ -47,9 +46,9 @@ class SafetyConfig:
     action_clip: float = 1.0
     move_speed: int = 20
     loop_dt: float = 0.05
-    ack_timeout: float = 0.5
-    settle_timeout: float = 4.0
-    poll_dt: float = 0.05
+    ack_timeout: float = 5.0
+    settle_timeout: float = 20.0
+    poll_dt: float = 0.2
     joint_tolerance_deg: float = 1.5
     stable_polls_required: int = 3
     min_command_delta_deg: float = 0.15
@@ -57,6 +56,10 @@ class SafetyConfig:
     max_consecutive_failures: int = 5
     show_window: bool = True
     object_z_offset_m: float = 0.0
+    target_lift_height_m: float = 0.10
+    grasp_close_distance_m: float = 0.015
+    grasp_release_distance_m: float = 0.055
+    grasp_close_angle_deg: float = 25.0
 
 
 class StateTracker:
@@ -64,6 +67,9 @@ class StateTracker:
         self.obj_pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self.obj_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.has_object_pose = False
+        self.initial_obj_pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        self.has_initial_obj_pos = False
+        self.grasp_latched = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,9 +82,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-tag-id", type=int, default=DEFAULT_BASE_TAG_ID)
     parser.add_argument("--obj-tag-id", type=int, default=DEFAULT_OBJ_TAG_ID)
     parser.add_argument("--move-speed", type=int, default=20)
-    parser.add_argument("--ack-timeout", type=float, default=0.5)
-    parser.add_argument("--settle-timeout", type=float, default=4.0)
-    parser.add_argument("--poll-dt", type=float, default=0.05)
+    parser.add_argument("--ack-timeout", type=float, default=5.0)
+    parser.add_argument("--settle-timeout", type=float, default=20.0)
+    parser.add_argument("--poll-dt", type=float, default=0.2)
     parser.add_argument("--loop-dt", type=float, default=0.05)
     parser.add_argument("--joint-tolerance-deg", type=float, default=1.5)
     parser.add_argument("--stable-polls", type=int, default=3)
@@ -117,6 +123,64 @@ def _scipy_quat_to_wxyz(quat_xyzw: np.ndarray) -> np.ndarray:
     )
 
 
+def _normalize_quat(quat: np.ndarray) -> np.ndarray:
+    quat = np.asarray(quat, dtype=np.float64)
+    norm = np.linalg.norm(quat)
+    if norm < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return quat / norm
+
+
+def _quat_conjugate(quat: np.ndarray) -> np.ndarray:
+    quat = np.asarray(quat, dtype=np.float64)
+    return np.array([quat[0], -quat[1], -quat[2], -quat[3]], dtype=np.float64)
+
+
+def _quat_multiply(quat_a: np.ndarray, quat_b: np.ndarray) -> np.ndarray:
+    wa, xa, ya, za = np.asarray(quat_a, dtype=np.float64)
+    wb, xb, yb, zb = np.asarray(quat_b, dtype=np.float64)
+    return np.array(
+        [
+            wa * wb - xa * xb - ya * yb - za * zb,
+            wa * xb + xa * wb + ya * zb - za * yb,
+            wa * yb - xa * zb + ya * wb + za * xb,
+            wa * zb + xa * yb - ya * xb + za * wb,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _rotation_vector(source_quat: np.ndarray, target_quat: np.ndarray) -> np.ndarray:
+    source_quat = _normalize_quat(source_quat)
+    target_quat = _normalize_quat(target_quat)
+    delta = _quat_multiply(target_quat, _quat_conjugate(source_quat))
+    delta = _normalize_quat(delta)
+    if delta[0] < 0.0:
+        delta = -delta
+
+    xyz = delta[1:]
+    sin_half = np.linalg.norm(xyz)
+    if sin_half < 1e-12:
+        return np.zeros(3, dtype=np.float64)
+
+    angle = 2.0 * np.arctan2(sin_half, np.clip(delta[0], -1.0, 1.0))
+    axis = xyz / sin_half
+    return axis * angle
+
+
+def _get_pose_error(
+    source_pos: np.ndarray,
+    source_quat: np.ndarray,
+    target_pos: np.ndarray,
+    target_quat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    pos_error = np.asarray(target_pos, dtype=np.float64) - np.asarray(
+        source_pos, dtype=np.float64
+    )
+    rot_error = _rotation_vector(source_quat, target_quat)
+    return pos_error, rot_error
+
+
 def wrap_joint_error_deg(current_deg: np.ndarray, target_deg: np.ndarray) -> np.ndarray:
     return (current_deg - target_deg + 180.0) % 360.0 - 180.0
 
@@ -147,14 +211,13 @@ def compute_safe_target_angles_deg(
 def build_observation(
     mc: MyCobotRemote,
     vision: AprilTagPose,
-    target_pos: np.ndarray,
     state: StateTracker,
     obj_tag_id: int,
     cfg: SafetyConfig,
 ) -> np.ndarray | None:
     arm_qpos = np.deg2rad(np.asarray(mc.angles, dtype=np.float64))
-    gripper_qpos = np.array([0.02, -0.02], dtype=np.float64)
-    robot_qpos = np.concatenate([arm_qpos, gripper_qpos])
+    gripper_state = np.array([0.02, -0.02], dtype=np.float64)
+    robot_qpos = np.concatenate([arm_qpos, gripper_state])
     robot_qvel = np.zeros(8, dtype=np.float64)
 
     tags, _ = vision.get_tag_poses(show_window=cfg.show_window)
@@ -168,6 +231,9 @@ def build_observation(
         state.obj_pos = obj_pos
         state.obj_quat = obj_quat
         state.has_object_pose = True
+        if not state.has_initial_obj_pos:
+            state.initial_obj_pos = obj_pos.copy()
+            state.has_initial_obj_pos = True
     elif state.has_object_pose:
         obj_pos = state.obj_pos
         obj_quat = state.obj_quat
@@ -178,21 +244,56 @@ def build_observation(
     ee_rpy = np.deg2rad(np.asarray(mc.coords[3:], dtype=np.float64))
     ee_quat = _scipy_quat_to_wxyz(R.from_euler("xyz", ee_rpy).as_quat())
 
-    rel_obj_ee = obj_pos - ee_pos
-    rel_obj_tgt = obj_pos - target_pos
+    if not state.has_initial_obj_pos:
+        return None
+
+    target_pos = state.initial_obj_pos + np.array(
+        [0.0, 0.0, cfg.target_lift_height_m], dtype=np.float64
+    )
+    target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    ee_obj_pos_error, ee_obj_rot_error = _get_pose_error(
+        ee_pos, ee_quat, obj_pos, obj_quat
+    )
+    obj_target_pos_error, _ = _get_pose_error(
+        obj_pos, obj_quat, target_pos, target_quat
+    )
+
+    ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
+    ee_obj_angle = float(np.linalg.norm(ee_obj_rot_error))
+    should_close = (
+        ee_obj_dist < cfg.grasp_close_distance_m
+        and ee_obj_angle < np.deg2rad(cfg.grasp_close_angle_deg)
+    )
+    keep_closed = state.grasp_latched and ee_obj_dist < cfg.grasp_release_distance_m
+    state.grasp_latched = bool(should_close or keep_closed)
+
+    lift_height = float(obj_pos[2] - state.initial_obj_pos[2])
 
     obs = np.concatenate(
         [
             robot_qpos,
             robot_qvel,
-            gripper_qpos,
+            gripper_state,
+            ee_pos,
+            ee_quat,
             obj_pos,
             obj_quat,
             target_pos,
-            rel_obj_ee,
-            rel_obj_tgt,
-            ee_pos,
-            ee_quat,
+            target_quat,
+            ee_obj_pos_error,
+            ee_obj_rot_error,
+            obj_target_pos_error,
+            np.array(
+                [
+                    np.linalg.norm(ee_obj_pos_error),
+                    np.linalg.norm(ee_obj_rot_error),
+                    np.linalg.norm(obj_target_pos_error),
+                    lift_height,
+                    float(state.grasp_latched),
+                ],
+                dtype=np.float64,
+            ),
         ]
     ).astype(np.float32)
 
@@ -238,7 +339,6 @@ def wait_until_target_stable(
 def main():
     args = parse_args()
     cfg = build_config(args)
-    target_pos = DEFAULT_TARGET_POS.copy()
 
     mc = MyCobotRemote(args.robot_ip)
     model = SAC.load(args.model_path)
@@ -277,7 +377,6 @@ def main():
             obs = build_observation(
                 mc=mc,
                 vision=vision,
-                target_pos=target_pos,
                 state=state,
                 obj_tag_id=args.obj_tag_id,
                 cfg=cfg,

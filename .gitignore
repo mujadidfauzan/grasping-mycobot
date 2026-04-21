@@ -12,5 +12,6 @@ myenv/
 # Ignore python cache
 **/__pycache__/
 *.pyc
+.pyc
 
 MUJOCO_LOG.TXT

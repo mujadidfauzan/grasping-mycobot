@@ -22,22 +22,37 @@ class AprilTagPose:
     FONT_SCALE = 0.5
     FONT_THICKNESS = 2
     LINE_HEIGHT = 18
+    # AprilTag world -> simulation world:
+    # sim_x = -tag_y, sim_y = tag_x, sim_z = -tag_z
+    _SIM_FRAME_REMAP = np.array(
+        [
+            [0.0, -1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
 
     def __init__(
         self,
         base_id: int = 12,
         tag_size: float = 0.022,
         cam_index: int = 2,
-        smooth_alpha: float = 0.4,
-        max_jump_m: float = 0.08,
+        smooth_alpha: float = 0.2,
+        max_jump_m: float = 0.5,
+        max_missed_frames: int = 5,
+        base_pos_offset_m: tuple[float, float, float] = (0.0, -0.10, 0.0),
     ):
         self.base_id = base_id
         self.tag_size = tag_size
         self.smooth_alpha = smooth_alpha
         self.max_jump_m = max_jump_m
+        self.max_missed_frames = max(1, int(max_missed_frames))
+        self.base_pos_offset_m = np.asarray(base_pos_offset_m, dtype=np.float64)
 
         self._T_base_cam: np.ndarray | None = None
         self._smooth: dict[int, dict] = {}  # last accepted world-frame pose per tag
+        self._missed_frames: dict[int, int] = {}
 
         self.camera_matrix = np.array(
             [[1601.5, 0.0, 725.3], [0.0, 2398.4, 384.8], [0.0, 0.0, 1.0]],
@@ -70,16 +85,16 @@ class AprilTagPose:
 
     @staticmethod
     def _rotation_to_euler(R_mat: np.ndarray) -> np.ndarray:
-        sy = np.sqrt(R_mat[0, 0] ** 2 + R_mat[1, 0] ** 2)
-        if sy >= 1e-6:
-            roll = np.arctan2(R_mat[2, 1], R_mat[2, 2])
-            pitch = np.arctan2(-R_mat[2, 0], sy)
-            yaw = np.arctan2(R_mat[1, 0], R_mat[0, 0])
-        else:
-            roll = np.arctan2(-R_mat[1, 2], R_mat[1, 1])
-            pitch = np.arctan2(-R_mat[2, 0], sy)
-            yaw = 0.0
-        return np.degrees([roll, pitch, yaw])
+        return R.from_matrix(R_mat).as_euler("xyz", degrees=True)
+
+    @classmethod
+    def _remap_to_sim_frame(
+        cls, pos: np.ndarray, rot: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        remap = cls._SIM_FRAME_REMAP
+        sim_pos = remap @ np.asarray(pos, dtype=np.float64).reshape(3)
+        sim_rot = remap @ np.asarray(rot, dtype=np.float64) @ remap.T
+        return sim_pos, sim_rot
 
     # ------------------------------------------------------------------
     # Filter
@@ -91,9 +106,12 @@ class AprilTagPose:
         Returns the smoothed estimate. If the reading is an outlier,
         returns the last known good pose unchanged.
         """
-        if tag_id not in self._smooth:
-            # First sighting — seed the filter unconditionally
+        missed_frames = self._missed_frames.get(tag_id, 0)
+        if tag_id not in self._smooth or missed_frames >= self.max_missed_frames:
+            # First sighting or a fresh re-detection after the tag was missing:
+            # accept the new measurement directly instead of comparing with stale data.
             self._smooth[tag_id] = {"pos": pos.copy(), "rpy": rpy.copy()}
+            self._missed_frames[tag_id] = 0
             return self._smooth[tag_id]
 
         prev = self._smooth[tag_id]
@@ -109,6 +127,7 @@ class AprilTagPose:
             "pos": a * pos + (1 - a) * prev["pos"],
             "rpy": a * rpy + (1 - a) * prev["rpy"],
         }
+        self._missed_frames[tag_id] = 0
         return self._smooth[tag_id]
 
     # ------------------------------------------------------------------
@@ -136,6 +155,13 @@ class AprilTagPose:
             camera_params=cam_params,
             tag_size=self.tag_size,
         )
+        detected_ids = {det.tag_id for det in detections}
+
+        for tid in list(self._smooth):
+            if tid in detected_ids:
+                self._missed_frames[tid] = 0
+            else:
+                self._missed_frames[tid] = self._missed_frames.get(tid, 0) + 1
 
         # Update world-from-camera transform whenever base tag is visible
         for det in detections:
@@ -165,13 +191,12 @@ class AprilTagPose:
         for det in detections:
             T_cam_tag = self._make_transform(det.pose_R, det.pose_t)
             T_world_tag = self._T_base_cam @ T_cam_tag
-            R_mat = T_world_tag[:3, :3]
+            tag_pos = T_world_tag[:3, 3]
+            tag_rot = T_world_tag[:3, :3]
+            sim_pos, sim_rot = self._remap_to_sim_frame(tag_pos, tag_rot)
 
-            # Axis remapping to sim world frame convention
-            raw_pos = np.array(
-                [T_world_tag[1, 3], T_world_tag[0, 3], -T_world_tag[2, 3]]
-            )
-            raw_rpy = self._rotation_to_euler(R_mat)
+            raw_pos = sim_pos + self.base_pos_offset_m
+            raw_rpy = self._rotation_to_euler(sim_rot)
 
             # Apply outlier rejection + EMA — this is what stops the pose flips
             filtered = self._filter(det.tag_id, raw_pos, raw_rpy)
@@ -229,7 +254,7 @@ class AprilTagPose:
 
 def main():
     vision = AprilTagPose(
-        base_id=12,
+        base_id=6,
         cam_index=2,
         smooth_alpha=0.5,  # lower = smoother, higher = more responsive
         max_jump_m=0.15,  # max plausible jump between frames (metres)

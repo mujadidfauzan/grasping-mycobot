@@ -134,6 +134,7 @@ def resolve_env_names() -> list[str]:
         "GraspingEnv",
         "GraspingEnvV1",
         "GraspingEnvV2",
+        "PlaceAboveTargetEnv",
         "PlaceTargetEnv",
         "ReachingEnv",
     ]
@@ -143,7 +144,7 @@ def resolve_env_names() -> list[str]:
 
 
 def resolve_default_xml_path(env_name: str) -> Path:
-    if env_name == "PlaceTargetEnv":
+    if env_name in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
         return OBJECT_PLACE_XML_PATH
     return OBJECT_LIFT_XML_PATH
 
@@ -179,6 +180,12 @@ def sanitize_filename_part(value: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
     sanitized = sanitized.strip("._")
     return sanitized or "evaluation"
+
+
+def sanitize_column_part(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip())
+    sanitized = sanitized.strip("_")
+    return sanitized or "value"
 
 
 def resolve_output_csv_path(
@@ -257,6 +264,62 @@ def flatten_debug_state(debug_state: dict[str, Any]) -> dict[str, Any]:
     return flattened
 
 
+def get_joint_qpos_size(model: Any, joint_id: int) -> int:
+    import mujoco
+
+    joint_type = int(model.jnt_type[joint_id])
+    if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+        return 7
+    if joint_type == mujoco.mjtJoint.mjJNT_BALL:
+        return 4
+    return 1
+
+
+def extract_robot_joint_positions(env: Any) -> dict[str, Any]:
+    import mujoco
+
+    model = getattr(env, "model", None)
+    data = getattr(env, "data", None)
+    object_info = getattr(env, "object_info", None)
+    if (
+        model is None
+        or data is None
+        or not isinstance(object_info, dict)
+        or not object_info
+    ):
+        return {}
+
+    try:
+        first_object_qposadr = min(
+            int(info["qposadr"]) for info in object_info.values()
+        )
+    except (KeyError, TypeError, ValueError):
+        return {}
+
+    joint_positions: dict[str, Any] = {}
+    for joint_id in range(int(model.njnt)):
+        qposadr = int(model.jnt_qposadr[joint_id])
+        if qposadr >= first_object_qposadr:
+            continue
+
+        joint_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        safe_joint_name = sanitize_column_part(joint_name or f"joint_{joint_id}")
+        column_name = f"robot_joint_pos_{safe_joint_name}"
+        qpos_size = get_joint_qpos_size(model, joint_id)
+        joint_qpos = data.qpos[qposadr : qposadr + qpos_size].copy()
+        joint_positions[column_name] = (
+            float(joint_qpos[0]) if qpos_size == 1 else joint_qpos
+        )
+
+    return joint_positions
+
+
+def collect_debug_state(env: Any, debug_state_getter: Any) -> dict[str, Any]:
+    debug_state = dict(debug_state_getter())
+    debug_state.update(extract_robot_joint_positions(env))
+    return debug_state
+
+
 def build_debug_row(
     *,
     episode: int,
@@ -313,9 +376,9 @@ class DebugStateCsvWriter:
 
 def main() -> None:
     args = parse_args()
-    if args.env == "PlaceTargetEnv" and not args.grasp_model:
+    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"} and not args.grasp_model:
         raise ValueError(
-            "PlaceTargetEnv requires --grasp-model so reset can start from the trained grasping policy state."
+            f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
 
     try:
@@ -331,6 +394,7 @@ def main() -> None:
             GraspingEnvV1,
             GraspingEnvV2,
             GraspingEnvV3,
+            PlaceAboveTargetEnv,
             PlaceTargetEnv,
             ReachingEnv,
         )
@@ -344,6 +408,7 @@ def main() -> None:
         "GraspingEnv": GraspingEnv,
         "GraspingEnvV1": GraspingEnvV1,
         "GraspingEnvV2": GraspingEnvV2,
+        "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
         "ReachingEnv": ReachingEnv,
     }
@@ -363,7 +428,7 @@ def main() -> None:
     render_mode = None if args.render == "none" else args.render
     env_cls = env_registry[args.env]
     env_kwargs = {}
-    if args.env == "PlaceTargetEnv":
+    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
@@ -414,7 +479,9 @@ def main() -> None:
                     phase="reset",
                     terminated=False,
                     truncated=False,
-                    debug_state=debug_state_getter(),
+                    debug_state=collect_debug_state(
+                        env.unwrapped, debug_state_getter
+                    ),
                 )
             )
 
@@ -428,7 +495,9 @@ def main() -> None:
                         phase="step",
                         terminated=terminated,
                         truncated=truncated,
-                        debug_state=debug_state_getter(),
+                        debug_state=collect_debug_state(
+                            env.unwrapped, debug_state_getter
+                        ),
                     )
                 )
                 # if terminated or truncated:

@@ -17,6 +17,7 @@ from source.envs import (
     GraspingEnvV1,
     GraspingEnvV2,
     GraspingEnvV3,
+    PlaceAboveTargetEnv,
     PlaceTargetEnv,
     ReachingEnv,
 )
@@ -25,6 +26,7 @@ ENV_REGISTRY = {
     "GraspingEnv": GraspingEnv,
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
+    "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
     "ReachingEnv": ReachingEnv,
 }
@@ -40,6 +42,7 @@ DEFAULT_XML_BY_ENV = {
     "GraspingEnv": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
+    "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
     "ReachingEnv": OBJECT_LIFT_XML_PATH,
 }
@@ -497,7 +500,7 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "gripper_action_scale": args.gripper_action_scale,
             }
         )
-    elif args.env == "PlaceTargetEnv":
+    elif args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
@@ -629,9 +632,9 @@ def maybe_load_replay_buffer(model: SAC, checkpoint_path: Path):
 
 def main():
     args = parse_args()
-    if args.env == "PlaceTargetEnv" and not args.grasp_model:
+    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"} and not args.grasp_model:
         raise ValueError(
-            "PlaceTargetEnv requires --grasp-model so reset can start from the trained grasping policy state."
+            f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
     xml_path = resolve_xml_path(args.env, args.xml_file)
     args.xml_file = str(xml_path)

@@ -1,6 +1,7 @@
 from .grasping_env import GraspingEnv
 from .grasping_env_v1 import GraspingEnvV1
 from .grasping_env_v2 import GraspingEnvV2
+from .place_above_target_env import PlaceAboveTargetEnv
 from .place_target_env import PlaceTargetEnv
 from .reaching_env import ReachingEnv
 
@@ -13,6 +14,7 @@ __all__ = [
     "GraspingEnv",
     "GraspingEnvV1",
     "GraspingEnvV2",
+    "PlaceAboveTargetEnv",
     "PlaceTargetEnv",
     "ReachingEnv",
     "GraspingEnvV3",
