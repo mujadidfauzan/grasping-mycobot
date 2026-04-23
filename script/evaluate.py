@@ -73,53 +73,87 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--grasp-model",
         default=None,
-        help="For PlaceTargetEnv: path to the trained grasping SAC .zip used to generate reset states.",
+        help="For placement/insertion envs: path to the trained grasping SAC .zip used to generate reset states.",
     )
     parser.add_argument(
         "--grasp-env",
         default="GraspingEnvV2",
-        help="For PlaceTargetEnv: grasping environment class name used by --grasp-model.",
+        help="For placement/insertion envs: grasping environment class name used by --grasp-model.",
     )
     parser.add_argument(
         "--grasp-xml-file",
         default=None,
-        help="For PlaceTargetEnv: XML scene used by the grasping policy. Defaults to object_lift.xml.",
+        help="For placement/insertion envs: XML scene used by the grasping policy. Defaults to object_lift.xml.",
     )
     parser.add_argument(
         "--grasp-max-steps",
         type=int,
         default=300,
-        help="For PlaceTargetEnv: max rollout steps per grasp-policy reset attempt.",
+        help="For placement/insertion envs: max rollout steps per grasp-policy reset attempt.",
     )
     parser.add_argument(
         "--grasp-attempts",
         type=int,
         default=6,
-        help="For PlaceTargetEnv: how many grasp-policy reset attempts to try before falling back to the best snapshot.",
+        help="For placement/insertion envs: how many grasp-policy reset attempts to try before falling back to the best snapshot.",
     )
     parser.add_argument(
         "--grasp-min-lift",
         type=float,
         default=0.025,
-        help="For PlaceTargetEnv: minimum object lift height required before a grasp snapshot is accepted.",
+        help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
     )
     parser.add_argument(
         "--grasp-ee-obj-dist",
         type=float,
         default=0.035,
-        help="For PlaceTargetEnv: max EE-object distance allowed for a grasp snapshot.",
+        help="For placement/insertion envs: max EE-object distance allowed for a grasp snapshot.",
     )
     parser.add_argument(
         "--grasp-hold-steps",
         type=int,
         default=3,
-        help="For PlaceTargetEnv: required consecutive valid grasp steps before transferring the state.",
+        help="For placement/insertion envs: required consecutive valid grasp steps before transferring the state.",
     )
     parser.add_argument(
         "--terminate-ee-obj-dist",
         type=float,
         default=0.08,
-        help="For PlaceTargetEnv: terminate the episode when the object is this far or farther from the EE.",
+        help="For placement/insertion envs: terminate the episode when the object is this far or farther from the EE.",
+    )
+    parser.add_argument(
+        "--place-above-model",
+        default=None,
+        help="For InsertTargetEnv: path to the trained PlaceAboveSite SAC .zip used to generate reset states.",
+    )
+    parser.add_argument(
+        "--place-above-xml-file",
+        default=None,
+        help="For InsertTargetEnv: XML scene used by the place-above policy. Defaults to the insertion env XML.",
+    )
+    parser.add_argument(
+        "--place-above-max-steps",
+        type=int,
+        default=150,
+        help="For InsertTargetEnv: max rollout steps per place-above-policy reset attempt.",
+    )
+    parser.add_argument(
+        "--place-above-attempts",
+        type=int,
+        default=4,
+        help="For InsertTargetEnv: how many place-above-policy reset attempts to try before falling back to the best snapshot.",
+    )
+    parser.add_argument(
+        "--place-above-hold-steps",
+        type=int,
+        default=10,
+        help="For InsertTargetEnv: required consecutive valid place-above steps before transferring the state.",
+    )
+    parser.add_argument(
+        "--place-above-target-height",
+        type=float,
+        default=0.04,
+        help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
     return parser.parse_args()
 
@@ -134,9 +168,11 @@ def resolve_env_names() -> list[str]:
         "GraspingEnv",
         "GraspingEnvV1",
         "GraspingEnvV2",
+        "InsertTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceTargetEnv",
         "ReachingEnv",
+        "PlaceAboveSiteEnv",
     ]
     if GraspingEnvV3 is not None:
         env_names.append("GraspingEnvV3")
@@ -144,7 +180,12 @@ def resolve_env_names() -> list[str]:
 
 
 def resolve_default_xml_path(env_name: str) -> Path:
-    if env_name in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
+    if env_name in {
+        "InsertTargetEnv",
+        "PlaceTargetEnv",
+        "PlaceAboveTargetEnv",
+        "PlaceAboveSiteEnv",
+    }:
         return OBJECT_PLACE_XML_PATH
     return OBJECT_LIFT_XML_PATH
 
@@ -376,9 +417,18 @@ class DebugStateCsvWriter:
 
 def main() -> None:
     args = parse_args()
-    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"} and not args.grasp_model:
+    if args.env in {
+        "InsertTargetEnv",
+        "PlaceTargetEnv",
+        "PlaceAboveTargetEnv",
+        "PlaceAboveSiteEnv",
+    } and not args.grasp_model:
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
+        )
+    if args.env == "InsertTargetEnv" and not args.place_above_model:
+        raise ValueError(
+            "InsertTargetEnv requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
 
     try:
@@ -394,6 +444,8 @@ def main() -> None:
             GraspingEnvV1,
             GraspingEnvV2,
             GraspingEnvV3,
+            InsertTargetEnv,
+            PlaceAboveSiteEnv,
             PlaceAboveTargetEnv,
             PlaceTargetEnv,
             ReachingEnv,
@@ -408,7 +460,9 @@ def main() -> None:
         "GraspingEnv": GraspingEnv,
         "GraspingEnvV1": GraspingEnvV1,
         "GraspingEnvV2": GraspingEnvV2,
+        "InsertTargetEnv": InsertTargetEnv,
         "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
+        "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
         "ReachingEnv": ReachingEnv,
     }
@@ -428,7 +482,12 @@ def main() -> None:
     render_mode = None if args.render == "none" else args.render
     env_cls = env_registry[args.env]
     env_kwargs = {}
-    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
+    if args.env in {
+        "InsertTargetEnv",
+        "PlaceTargetEnv",
+        "PlaceAboveTargetEnv",
+        "PlaceAboveSiteEnv",
+    }:
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
@@ -440,6 +499,24 @@ def main() -> None:
                 "grasp_success_ee_obj_dist": args.grasp_ee_obj_dist,
                 "grasp_success_hold_steps": args.grasp_hold_steps,
                 "terminate_ee_obj_distance": args.terminate_ee_obj_dist,
+            }
+        )
+        if args.env == "InsertTargetEnv":
+            env_kwargs.update(
+                {
+                    "place_above_model_path": args.place_above_model,
+                    "place_above_xml_file": args.place_above_xml_file,
+                    "place_above_max_steps": args.place_above_max_steps,
+                    "place_above_attempts_per_reset": args.place_above_attempts,
+                    "place_above_success_hold_steps": args.place_above_hold_steps,
+                    "place_above_target_height_above_place": args.place_above_target_height,
+                }
+            )
+    if args.env == "PlaceAboveSiteEnv":
+        env_kwargs.update(
+            {
+                "use_target_place_from_xml": True,
+                "target_height_above_place": 0.04,
             }
         )
     env = env_cls(xml_file=str(xml_path), render_mode=render_mode, **env_kwargs)
@@ -479,9 +556,7 @@ def main() -> None:
                     phase="reset",
                     terminated=False,
                     truncated=False,
-                    debug_state=collect_debug_state(
-                        env.unwrapped, debug_state_getter
-                    ),
+                    debug_state=collect_debug_state(env.unwrapped, debug_state_getter),
                 )
             )
 

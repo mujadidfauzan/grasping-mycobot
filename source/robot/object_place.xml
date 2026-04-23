@@ -49,6 +49,16 @@
 
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
+    <body name="target_body" pos="0. 0. 0.">
+      <site
+        name="target"
+        pos="0.245 0.10 0.06"
+        size=".01 .01 .01"
+        rgba="1 0.0 0.0 1"
+        type="sphere"
+      />
+    </body>
+
     <body name="cube_place" pos="0.23 0.10 0.0">
       <geom
         name="cube_place_geom"

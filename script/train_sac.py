@@ -6,33 +6,38 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from gymnasium import Wrapper
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
 from torch import nn
 
-from source.envs import (
+try:
+    import cv2
+except ModuleNotFoundError:
+    cv2 = None
+
+from source.envs import (  # GraspingEnvV3,; ReachingEnv,
     GraspingEnv,
     GraspingEnvV1,
     GraspingEnvV2,
-    GraspingEnvV3,
+    InsertTargetEnv,
+    PlaceAboveSiteEnv,
     PlaceAboveTargetEnv,
     PlaceTargetEnv,
-    ReachingEnv,
 )
 
 ENV_REGISTRY = {
     "GraspingEnv": GraspingEnv,
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
+    "InsertTargetEnv": InsertTargetEnv,
+    "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
     "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
-    "ReachingEnv": ReachingEnv,
 }
 
-if GraspingEnvV3 is not None:
-    ENV_REGISTRY["GraspingEnvV3"] = GraspingEnvV3
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -42,13 +47,12 @@ DEFAULT_XML_BY_ENV = {
     "GraspingEnv": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
+    "InsertTargetEnv": OBJECT_PLACE_XML_PATH,
+    "PlaceAboveSiteEnv": OBJECT_LIFT_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
-    "ReachingEnv": OBJECT_LIFT_XML_PATH,
 }
 
-if GraspingEnvV3 is not None:
-    DEFAULT_XML_BY_ENV["GraspingEnvV3"] = OBJECT_LIFT_XML_PATH
 
 POLICY_KWARGS = {
     "net_arch": {
@@ -63,6 +67,99 @@ INFO_LOG_EXCLUDE_KEYS = {
     "terminal_observation",
     "TimeLimit.truncated",
 }
+
+
+class DebugVideoOverlayWrapper(Wrapper):
+    def render(self):
+        frame = self.env.render()
+        if frame is None or cv2 is None or getattr(self, "render_mode", None) != "rgb_array":
+            return frame
+
+        debug_state_getter = getattr(self.unwrapped, "get_debug_state", None)
+        if not callable(debug_state_getter):
+            return frame
+
+        try:
+            debug_state = dict(debug_state_getter())
+        except Exception:
+            return frame
+
+        lines = self._build_overlay_lines(debug_state)
+        if not lines:
+            return frame
+
+        overlay = np.array(frame, copy=True)
+        return self._draw_overlay(overlay, lines)
+
+    @staticmethod
+    def _format_vec3(value) -> str | None:
+        try:
+            vector = np.asarray(value, dtype=np.float64).reshape(-1)
+        except Exception:
+            return None
+        if vector.size < 3:
+            return None
+        return f"({vector[0]:+.3f}, {vector[1]:+.3f}, {vector[2]:+.3f})"
+
+    def _build_overlay_lines(self, debug_state: Mapping) -> list[str]:
+        lines: list[str] = []
+
+        if "active_object" in debug_state:
+            lines.append(f"object: {debug_state['active_object']}")
+
+        sampled_site_pos = self._format_vec3(debug_state.get("sampled_target_site_pos"))
+        if sampled_site_pos is not None:
+            lines.append(f"target site xyz: {sampled_site_pos}")
+        else:
+            target_pos = self._format_vec3(debug_state.get("target_pos"))
+            if target_pos is not None:
+                lines.append(f"target xyz: {target_pos}")
+
+        sampled_place_pos = self._format_vec3(debug_state.get("target_place_pos"))
+        if sampled_place_pos is not None:
+            lines.append(f"target place xyz: {sampled_place_pos}")
+
+        target_dist = _coerce_scalar_metric(debug_state.get("obj_target_dist"))
+        if target_dist is None:
+            target_dist = _coerce_scalar_metric(debug_state.get("object_target_dist"))
+        if target_dist is not None:
+            lines.append(f"target dist: {target_dist:.3f} m")
+
+        return lines
+
+    @staticmethod
+    def _draw_overlay(frame: np.ndarray, lines: list[str]) -> np.ndarray:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.55
+        thickness = 1
+        line_height = 24
+        x = 12
+        y = 24
+
+        max_width = 0
+        for line in lines:
+            (width, _height), _baseline = cv2.getTextSize(
+                line, font, font_scale, thickness
+            )
+            max_width = max(max_width, width)
+
+        box_height = line_height * len(lines) + 10
+        cv2.rectangle(frame, (6, 6), (x + max_width + 12, box_height), (0, 0, 0), -1)
+
+        for line in lines:
+            cv2.putText(
+                frame,
+                line,
+                (x, y),
+                font,
+                font_scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA,
+            )
+            y += line_height
+
+        return frame
 
 
 def _serialize_config_value(value):
@@ -373,53 +470,87 @@ def parse_args():
     parser.add_argument(
         "--grasp-model",
         default=None,
-        help="For PlaceTargetEnv: path to the trained grasping SAC .zip used to generate reset states.",
+        help="For placement/insertion envs: path to the trained grasping SAC .zip used to generate reset states.",
     )
     parser.add_argument(
         "--grasp-env",
         default="GraspingEnvV2",
-        help="For PlaceTargetEnv: grasping environment class name used by --grasp-model.",
+        help="For placement/insertion envs: grasping environment class name used by --grasp-model.",
     )
     parser.add_argument(
         "--grasp-xml-file",
         default=None,
-        help="For PlaceTargetEnv: XML scene used by the grasping policy. Defaults to object_lift.xml.",
+        help="For placement/insertion envs: XML scene used by the grasping policy. Defaults to object_lift.xml.",
     )
     parser.add_argument(
         "--grasp-max-steps",
         type=int,
         default=300,
-        help="For PlaceTargetEnv: max rollout steps per grasp-policy reset attempt.",
+        help="For placement/insertion envs: max rollout steps per grasp-policy reset attempt.",
     )
     parser.add_argument(
         "--grasp-attempts",
         type=int,
         default=6,
-        help="For PlaceTargetEnv: how many grasp-policy reset attempts to try before falling back to the best snapshot.",
+        help="For placement/insertion envs: how many grasp-policy reset attempts to try before falling back to the best snapshot.",
     )
     parser.add_argument(
         "--grasp-min-lift",
         type=float,
         default=0.025,
-        help="For PlaceTargetEnv: minimum object lift height required before a grasp snapshot is accepted.",
+        help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
     )
     parser.add_argument(
         "--grasp-ee-obj-dist",
         type=float,
         default=0.035,
-        help="For PlaceTargetEnv: max EE-object distance allowed for a grasp snapshot.",
+        help="For placement/insertion envs: max EE-object distance allowed for a grasp snapshot.",
     )
     parser.add_argument(
         "--grasp-hold-steps",
         type=int,
         default=3,
-        help="For PlaceTargetEnv: required consecutive valid grasp steps before transferring the state.",
+        help="For placement/insertion envs: required consecutive valid grasp steps before transferring the state.",
     )
     parser.add_argument(
         "--terminate-ee-obj-dist",
         type=float,
         default=0.08,
-        help="For PlaceTargetEnv: terminate the episode when the object is this far or farther from the EE.",
+        help="For placement/insertion envs: terminate the episode when the object is this far or farther from the EE.",
+    )
+    parser.add_argument(
+        "--place-above-model",
+        default=None,
+        help="For InsertTargetEnv: path to the trained PlaceAboveSite SAC .zip used to generate reset states.",
+    )
+    parser.add_argument(
+        "--place-above-xml-file",
+        default=None,
+        help="For InsertTargetEnv: XML scene used by the place-above policy. Defaults to the insertion env XML.",
+    )
+    parser.add_argument(
+        "--place-above-max-steps",
+        type=int,
+        default=150,
+        help="For InsertTargetEnv: max rollout steps per place-above-policy reset attempt.",
+    )
+    parser.add_argument(
+        "--place-above-attempts",
+        type=int,
+        default=4,
+        help="For InsertTargetEnv: how many place-above-policy reset attempts to try before falling back to the best snapshot.",
+    )
+    parser.add_argument(
+        "--place-above-hold-steps",
+        type=int,
+        default=10,
+        help="For InsertTargetEnv: required consecutive valid place-above steps before transferring the state.",
+    )
+    parser.add_argument(
+        "--place-above-target-height",
+        type=float,
+        default=0.04,
+        help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
     return parser.parse_args()
 
@@ -486,6 +617,7 @@ def make_env(
 
     def _init():
         env = env_cls(xml_file=xml_file, render_mode=render_mode, **env_kwargs)
+        env = DebugVideoOverlayWrapper(env)
         return Monitor(env)
 
     return _init
@@ -500,7 +632,12 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "gripper_action_scale": args.gripper_action_scale,
             }
         )
-    elif args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"}:
+    elif args.env in {
+        "InsertTargetEnv",
+        "PlaceTargetEnv",
+        "PlaceAboveTargetEnv",
+        "PlaceAboveSiteEnv",
+    }:
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
@@ -514,6 +651,17 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "terminate_ee_obj_distance": args.terminate_ee_obj_dist,
             }
         )
+        if args.env == "InsertTargetEnv":
+            env_kwargs.update(
+                {
+                    "place_above_model_path": args.place_above_model,
+                    "place_above_xml_file": args.place_above_xml_file,
+                    "place_above_max_steps": args.place_above_max_steps,
+                    "place_above_attempts_per_reset": args.place_above_attempts,
+                    "place_above_success_hold_steps": args.place_above_hold_steps,
+                    "place_above_target_height_above_place": args.place_above_target_height,
+                }
+            )
 
     env = DummyVecEnv([make_env(args.env, args.xml_file, env_kwargs=env_kwargs)])
     env = VecVideoRecorder(
@@ -632,9 +780,22 @@ def maybe_load_replay_buffer(model: SAC, checkpoint_path: Path):
 
 def main():
     args = parse_args()
-    if args.env in {"PlaceTargetEnv", "PlaceAboveTargetEnv"} and not args.grasp_model:
+    if (
+        args.env
+        in {
+            "InsertTargetEnv",
+            "PlaceTargetEnv",
+            "PlaceAboveTargetEnv",
+            "PlaceAboveSiteEnv",
+        }
+        and not args.grasp_model
+    ):
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
+        )
+    if args.env == "InsertTargetEnv" and not args.place_above_model:
+        raise ValueError(
+            "InsertTargetEnv requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
     xml_path = resolve_xml_path(args.env, args.xml_file)
     args.xml_file = str(xml_path)

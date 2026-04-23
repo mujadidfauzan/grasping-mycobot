@@ -466,8 +466,8 @@ class GraspingEnv(MujocoEnv, utils.EzPickle):
             dofadr = int(info["dofadr"])
 
             if obj_name == self.active_obj_name:
-                qpos[qposadr : qposadr + 3] = [0.185, 0.033, 0.05]  # EDIT
-                qpos[qposadr + 3 : qposadr + 7] = identity_quat  # EDIT
+                qpos[qposadr : qposadr + 3] = obj_pos  # EDIT
+                qpos[qposadr + 3 : qposadr + 7] = obj_quat  # EDIT
             else:
                 qpos[qposadr : qposadr + 3] = np.array(
                     [6.0, 1.0, 1.0], dtype=np.float64
