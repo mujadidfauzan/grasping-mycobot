@@ -284,6 +284,8 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         self.sampled_object_yaw = 0.0
         self.applied_object_yaw = 0.0
         self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
+        self._target_place_override_pos: np.ndarray | None = None
+        self._target_place_override_quat: np.ndarray | None = None
 
         closed_ctrl = np.zeros(int(self.model.nu), dtype=np.float64)
         self._set_closed_gripper_target(closed_ctrl)
@@ -499,6 +501,55 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
 
         target_pos, _ = self._get_target_pose()
         self.model.site_pos[self.target_site_id] = target_pos.copy()
+
+    def set_target_place_override(
+        self,
+        target_place_pos: np.ndarray | None,
+        target_place_quat: np.ndarray | None = None,
+    ) -> None:
+        if target_place_pos is None:
+            self._target_place_override_pos = None
+            self._target_place_override_quat = None
+            return
+
+        if not self._use_target_place_from_xml:
+            raise ValueError(
+                "Target place override requires use_target_place_from_xml=True."
+            )
+        if target_place_quat is None:
+            raise ValueError(
+                "target_place_quat must be provided when setting a target override."
+            )
+
+        target_place_pos = np.asarray(target_place_pos, dtype=np.float64).reshape(-1)
+        target_place_quat = np.asarray(target_place_quat, dtype=np.float64).reshape(-1)
+        if target_place_pos.shape != (3,):
+            raise ValueError(
+                "target_place_pos must have shape (3,), "
+                f"got {target_place_pos.shape}."
+            )
+        if target_place_quat.shape != (4,):
+            raise ValueError(
+                "target_place_quat must have shape (4,), "
+                f"got {target_place_quat.shape}."
+            )
+
+        self._target_place_override_pos = target_place_pos.copy()
+        self._target_place_override_quat = self._normalize_quat(target_place_quat)
+
+    def _apply_target_place_override(self) -> None:
+        if not self._use_target_place_from_xml:
+            return
+        if (
+            self._target_place_override_pos is None
+            or self._target_place_override_quat is None
+        ):
+            return
+
+        active_place_info = self._get_active_place_info()
+        body_id = int(active_place_info["body_id"])
+        self.model.body_pos[body_id] = self._target_place_override_pos.copy()
+        self.model.body_quat[body_id] = self._target_place_override_quat.copy()
 
     @staticmethod
     def _joint_name_map(model) -> dict[str, int]:
@@ -828,13 +879,16 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             self.sampled_target_site_pos = self._sample_target_site_pose()
             self.model.site_pos[self.target_site_id] = self.sampled_target_site_pos.copy()
         self._restore_grasp_snapshot(snapshot)
-        mujoco.mj_forward(self.model, self.data)
         if self._use_target_place_from_xml:
+            self._apply_target_place_override()
+            mujoco.mj_forward(self.model, self.data)
             self._sync_target_site_to_active_place()
             mujoco.mj_forward(self.model, self.data)
             self.sampled_target_site_pos = self.model.site_pos[
                 self.target_site_id
             ].copy()
+        else:
+            mujoco.mj_forward(self.model, self.data)
 
         self.initial_obj_site_pos = np.asarray(
             snapshot["obj_pos"], dtype=np.float64
@@ -1075,6 +1129,9 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
                 np.linalg.norm(ee_obj_pos_error) >= self._terminate_ee_obj_distance
             ),
             "use_target_place_from_xml": bool(self._use_target_place_from_xml),
+            "target_place_override_active": bool(
+                self._target_place_override_pos is not None
+            ),
             "task_mode": (
                 "object_above_xml_target_place"
                 if self._use_target_place_from_xml
@@ -1086,6 +1143,14 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             state["target_place_quat"] = target_place_quat
             state["target_place_yaw"] = float(self._quat_to_yaw(target_place_quat))
             state["target_height_above_place"] = float(self._target_height_above_place)
+        if (
+            self._target_place_override_pos is not None
+            and self._target_place_override_quat is not None
+        ):
+            state["target_place_override_pos"] = self._target_place_override_pos.copy()
+            state["target_place_override_quat"] = (
+                self._target_place_override_quat.copy()
+            )
         return state
 
     def close(self):

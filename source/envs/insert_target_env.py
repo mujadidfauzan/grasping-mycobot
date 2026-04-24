@@ -676,6 +676,21 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
                 )
                 self.model.body_quat[body_id] = identity_quat
 
+    def _sample_target_place_pose(self) -> tuple[np.ndarray, np.ndarray, float]:
+        target_place_pos = np.array(
+            [
+                self.np_random.uniform(*self._target_x_range),
+                self.np_random.uniform(*self._target_y_range),
+                self.np_random.uniform(*self._target_z_range),
+            ],
+            dtype=np.float64,
+        )
+        target_place_yaw = float(
+            self.np_random.uniform(*self._target_place_yaw_range)
+        )
+        target_place_quat = self._yaw_to_quat(target_place_yaw)
+        return target_place_pos, target_place_quat, target_place_yaw
+
     def _ensure_place_above_policy_loaded(self) -> None:
         if self._place_above_env is not None and self._place_above_policy is not None:
             return
@@ -819,12 +834,18 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             + 0.01 * float(snapshot["success_counter"])
         )
 
-    def _sample_place_above_reset_snapshot(self) -> tuple[dict, str, int]:
+    def _sample_place_above_reset_snapshot(
+        self,
+        target_place_pos: np.ndarray,
+        target_place_quat: np.ndarray,
+    ) -> tuple[dict, str, int]:
         self._ensure_place_above_policy_loaded()
         place_above_env = self._place_above_env
         place_above_policy = self._place_above_policy
         assert place_above_env is not None
         assert place_above_policy is not None
+
+        place_above_env.set_target_place_override(target_place_pos, target_place_quat)
 
         best_snapshot: dict | None = None
         best_score = -np.inf
@@ -1036,9 +1057,17 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.initial_object_target_dist = np.inf
         self.best_object_target_dist = np.inf
         self.previous_object_target_dist = np.inf
+        (
+            self.sampled_target_place_pos,
+            self.sampled_target_place_quat,
+            self.sampled_target_place_yaw,
+        ) = self._sample_target_place_pose()
 
         snapshot, reset_source, attempt_count = (
-            self._sample_place_above_reset_snapshot()
+            self._sample_place_above_reset_snapshot(
+                self.sampled_target_place_pos,
+                self.sampled_target_place_quat,
+            )
         )
         self._restore_place_above_snapshot(snapshot)
 
