@@ -53,6 +53,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         reward_target_tanh_weight: float = 1.0,
         reward_target_orient_weight: float = 0.8,
         reward_target_bonus: float = 10.0,
+        reward_target_far_penalty: float = 10.0,
         reward_stay_bonus: float = 16.0,
         reward_drop_penalty: float = 12.0,
         reward_move_away_penalty: float = 100.0,
@@ -88,6 +89,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         allow_grasp_fallback_snapshot: bool = True,
         drop_penalty_min_target_progress: float = 0.03,
         move_away_distance_threshold: float = 0.002,
+        target_far_distance_threshold: float = 0.10,
         place_above_model_path: str | None = None,
         place_above_xml_file: str | None = None,
         place_above_max_steps: int = 150,
@@ -110,6 +112,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             reward_target_tanh_weight,
             reward_target_orient_weight,
             reward_target_bonus,
+            reward_target_far_penalty,
             reward_stay_bonus,
             reward_drop_penalty,
             reward_move_away_penalty,
@@ -145,6 +148,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             allow_grasp_fallback_snapshot,
             drop_penalty_min_target_progress,
             move_away_distance_threshold,
+            target_far_distance_threshold,
             place_above_model_path,
             place_above_xml_file,
             place_above_max_steps,
@@ -214,6 +218,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
         self._reward_target_orient_weight = float(reward_target_orient_weight)
         self._reward_target_bonus = float(reward_target_bonus)
+        self._reward_target_far_penalty = float(reward_target_far_penalty)
         self._reward_stay_bonus = float(reward_stay_bonus)
         self._reward_drop_penalty = float(reward_drop_penalty)
         self._reward_move_away_penalty = float(reward_move_away_penalty)
@@ -226,6 +231,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             raise ValueError("terminate_ee_obj_distance must be greater than 0.")
         self._drop_penalty_min_target_progress = float(drop_penalty_min_target_progress)
         self._move_away_distance_threshold = float(move_away_distance_threshold)
+        self._target_far_distance_threshold = float(target_far_distance_threshold)
         if self._drop_penalty_min_target_progress < 0.0:
             raise ValueError(
                 "drop_penalty_min_target_progress must be greater than or equal to 0."
@@ -234,6 +240,12 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             raise ValueError(
                 "move_away_distance_threshold must be greater than or equal to 0."
             )
+        if self._reward_target_far_penalty < 0.0:
+            raise ValueError(
+                "reward_target_far_penalty must be greater than or equal to 0."
+            )
+        if self._target_far_distance_threshold <= 0.0:
+            raise ValueError("target_far_distance_threshold must be greater than 0.")
         self.max_episode_steps = int(max_episode_steps)
         self._arm_action_scale = float(arm_action_scale)
         self._gripper_action_scale = float(gripper_action_scale)
@@ -956,15 +968,8 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
-        terminated_success = self.success_counter >= self._success_steps_required
-        terminated_ee_obj_far = bool(
-            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
-            and float(reward_info["object_target_dist"]) > self._success_distance
-        )
-        terminated = terminated_success or terminated_ee_obj_far
+        terminated = False
         truncated = self.current_step >= self.max_episode_steps
-        reward_info["terminated_success"] = int(terminated_success)
-        reward_info["terminated_ee_obj_far"] = int(terminated_ee_obj_far)
 
         if self.render_mode == "human":
             self.render()
@@ -988,24 +993,16 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
         self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
 
-        terminated_ee_obj_far = bool(
-            ee_obj_dist >= self._terminate_ee_obj_distance
-            and target_dist > self._success_distance
-        )
-
         target_pose_aligned = bool(
             target_dist < self._success_distance
             and target_angle < self._success_angle_rad
         )
+        reward_target = -target_dist * self._reward_target_weight
+        reward_target_orient = -target_angle * self._reward_target_orient_weight
         insertion_bonus = self._reward_target_bonus if target_pose_aligned else 0.0
-        moved_away = bool(
-            np.isfinite(self.previous_object_target_dist)
-            and target_dist
-            > self.previous_object_target_dist + self._move_away_distance_threshold
-        )
-        move_away_penalty = (
-            -self._reward_move_away_penalty
-            if moved_away and not target_pose_aligned
+        target_far_penalty = (
+            -self._reward_target_far_penalty
+            if target_dist > self._target_far_distance_threshold
             else 0.0
         )
 
@@ -1013,25 +1010,21 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             self.success_counter += 1
         else:
             self.success_counter = 0
-        reward = insertion_bonus + move_away_penalty
+        reward = (
+            reward_target + reward_target_orient + insertion_bonus + target_far_penalty
+        )
         self.previous_object_target_dist = float(target_dist)
 
         reward_info = {
-            "active_object": self.active_obj_name,
             "ee_object_dist": ee_obj_dist,
             "object_target_dist": target_dist,
             "object_target_rot_error": target_angle,
-            "reward_target": 0.0,
-            "reward_target_tanh": 0.0,
-            "reward_target_orient": 0.0,
+            "reward_target": float(reward_target),
+            "reward_target_orient": float(reward_target_orient),
             "reward_target_bonus": float(insertion_bonus),
             "target_pose_aligned": int(target_pose_aligned),
-            "stay_bonus": 0.0,
-            "drop_penalty": 0.0,
-            "control_penalty": 0.0,
-            "move_away_penalty": float(move_away_penalty),
-            "moved_away": int(moved_away),
-            "terminated_ee_obj_far_internal": int(terminated_ee_obj_far),
+            "target_far_penalty": float(target_far_penalty),
+            "target_too_far": int(target_dist > self._target_far_distance_threshold),
         }
 
         return float(reward), reward_info
@@ -1160,18 +1153,28 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         )
         config["action"]["gripper_open_target"] = self._gripper_open_target.tolist()
         config["action"]["gripper_closed_target"] = self._gripper_closed_target.tolist()
-        config["reward"]["params"]["reward_target_weight"] = 0.0
+        config["reward"]["params"]["reward_target_weight"] = float(
+            self._reward_target_weight
+        )
         config["reward"]["params"]["reward_target_tanh_weight"] = 0.0
-        config["reward"]["params"]["reward_target_orient_weight"] = 0.0
+        config["reward"]["params"]["reward_target_orient_weight"] = float(
+            self._reward_target_orient_weight
+        )
+        config["reward"]["params"]["reward_target_bonus"] = float(
+            self._reward_target_bonus
+        )
+        config["reward"]["params"]["reward_target_far_penalty"] = float(
+            self._reward_target_far_penalty
+        )
+        config["reward"]["params"]["target_far_distance_threshold"] = float(
+            self._target_far_distance_threshold
+        )
         config["reward"]["params"]["reward_stay_bonus"] = 0.0
         config["reward"]["params"]["reward_drop_penalty"] = 0.0
         config["reward"]["params"]["control_penalty_weight"] = 0.0
-        config["reward"]["params"]["reward_move_away_penalty"] = float(
-            self._reward_move_away_penalty
-        )
-        config["reward"]["params"]["move_away_distance_threshold"] = float(
-            self._move_away_distance_threshold
-        )
+        config["reward"]["params"]["reward_move_away_penalty"] = 0.0
+        config["reward"]["params"]["move_away_distance_threshold"] = 0.0
+        config["task"]["termination_enabled"] = False
         config["task"][
             "target_mode"
         ] = "object_insert_into_target_from_place_above_site"
@@ -1280,12 +1283,19 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "place_above_init_ee_obj_dist": float(
                 self._last_place_above_init_ee_obj_dist
             ),
-            "reward_move_away_penalty": float(self._reward_move_away_penalty),
-            "move_away_distance_threshold": float(self._move_away_distance_threshold),
+            "reward_target_weight": float(self._reward_target_weight),
+            "reward_target_bonus": float(self._reward_target_bonus),
+            "reward_target_far_penalty": float(self._reward_target_far_penalty),
+            "target_far_distance_threshold": float(self._target_far_distance_threshold),
             "terminate_ee_obj_distance": float(self._terminate_ee_obj_distance),
             "ee_obj_too_far": bool(
                 np.linalg.norm(ee_obj_pos_error) >= self._terminate_ee_obj_distance
             ),
+            "target_too_far": bool(
+                np.linalg.norm(obj_target_pos_error)
+                > self._target_far_distance_threshold
+            ),
+            "termination_enabled": False,
             "task_mode": "object_insert_into_target_from_place_above_site",
         }
 

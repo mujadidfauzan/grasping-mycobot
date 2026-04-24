@@ -119,11 +119,41 @@ class DebugVideoOverlayWrapper(Wrapper):
         if sampled_place_pos is not None:
             lines.append(f"target place xyz: {sampled_place_pos}")
 
+        sampled_insert_place_pos = self._format_vec3(
+            debug_state.get("sampled_target_place_pos")
+        )
+        if sampled_insert_place_pos is not None:
+            lines.append(f"sampled place xyz: {sampled_insert_place_pos}")
+
         target_dist = _coerce_scalar_metric(debug_state.get("obj_target_dist"))
         if target_dist is None:
             target_dist = _coerce_scalar_metric(debug_state.get("object_target_dist"))
         if target_dist is not None:
             lines.append(f"target dist: {target_dist:.3f} m")
+
+        sampled_place_yaw = _coerce_scalar_metric(
+            debug_state.get("sampled_target_place_yaw")
+        )
+        if sampled_place_yaw is not None:
+            lines.append(f"sampled place yaw: {sampled_place_yaw:+.3f}")
+
+        applied_place_yaw = _coerce_scalar_metric(debug_state.get("target_place_yaw"))
+        if applied_place_yaw is not None:
+            lines.append(f"applied place yaw: {applied_place_yaw:+.3f}")
+
+        place_above_reset_source = debug_state.get("place_above_reset_source")
+        if isinstance(place_above_reset_source, str):
+            lines.append(f"place-above reset: {place_above_reset_source}")
+
+        target_place_override_active = debug_state.get("target_place_override_active")
+        if isinstance(target_place_override_active, (bool, np.bool_)):
+            lines.append(
+                "place override: on" if bool(target_place_override_active) else "place override: off"
+            )
+
+        target_too_far = debug_state.get("target_too_far")
+        if isinstance(target_too_far, (bool, np.bool_)):
+            lines.append("target too far: yes" if bool(target_too_far) else "target too far: no")
 
         return lines
 
