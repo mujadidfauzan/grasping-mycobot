@@ -877,7 +877,9 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
         else:
             self.sampled_target_site_pos = self._sample_target_site_pose()
-            self.model.site_pos[self.target_site_id] = self.sampled_target_site_pos.copy()
+            self.model.site_pos[self.target_site_id] = (
+                self.sampled_target_site_pos.copy()
+            )
         self._restore_grasp_snapshot(snapshot)
         if self._use_target_place_from_xml:
             self._apply_target_place_override()

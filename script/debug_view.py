@@ -227,14 +227,29 @@ def print_debug_state(env) -> None:
             f"should_close={state['gripper_should_close']}"
         )
         if "target_place_pos" in state:
+            sampled_target_place_pos = state.get("sampled_target_place_pos")
+            if sampled_target_place_pos is not None:
+                print(
+                    f"Sampled target place pos={format_array(sampled_target_place_pos)} "
+                    f"yaw={np.rad2deg(state.get('sampled_target_place_yaw', 0.0)):.2f} deg"
+                )
             print(
                 f"Target place pos={format_array(state['target_place_pos'])} "
-                f"yaw_sampled={np.rad2deg(state.get('sampled_target_place_yaw', 0.0)):.2f} deg "
                 f"yaw_applied={np.rad2deg(state.get('applied_target_place_yaw', 0.0)):.2f} deg "
                 f"yaw_current={np.rad2deg(state.get('target_place_yaw', 0.0)):.2f} deg "
                 f"init_source={state.get('place_above_reset_source', state.get('grasp_reset_source', 'n/a'))} "
                 f"attempts={state.get('place_above_reset_attempts', state.get('grasp_reset_attempts', 'n/a'))}"
             )
+            if "place_above_init_target_dist" in state:
+                print(
+                    f"PlaceAbove init target_dist={state['place_above_init_target_dist']:.4f} m "
+                    f"ee_obj_dist={state.get('place_above_init_ee_obj_dist', float('nan')):.4f} m"
+                )
+            if "target_too_far" in state:
+                print(
+                    f"Target too far={state['target_too_far']} "
+                    f"(threshold={state.get('target_far_distance_threshold', float('nan')):.4f} m)"
+                )
         return
 
     target_rpy_deg = np.rad2deg(quat_to_euler_xyz(state["target_quat"]))
