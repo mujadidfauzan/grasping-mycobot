@@ -222,10 +222,10 @@ def print_debug_state(env) -> None:
             f"applied={np.rad2deg(state['applied_object_yaw']):.2f} deg "
             f"current={np.rad2deg(state['object_yaw']):.2f} deg"
         )
-        print(
-            f"Gripper assist_mix={state['gripper_assist_mix']:.3f} "
-            f"should_close={state['gripper_should_close']}"
-        )
+        # print(
+        #     f"Gripper assist_mix={state['gripper_assist_mix']:.3f} "
+        #     f"should_close={state['gripper_should_close']}"
+        # )
         if "target_place_pos" in state:
             sampled_target_place_pos = state.get("sampled_target_place_pos")
             if sampled_target_place_pos is not None:
@@ -315,12 +315,16 @@ def resolve_xml_path(env_name: str, xml_file_arg: str | None) -> Path:
 
 def main() -> None:
     args = parse_args()
-    if args.env in {
-        "InsertTargetEnv",
-        "PlaceTargetEnv",
-        "PlaceAboveTargetEnv",
-        "PlaceAboveSiteEnv",
-    } and not args.grasp_model:
+    if (
+        args.env
+        in {
+            "InsertTargetEnv",
+            "PlaceTargetEnv",
+            "PlaceAboveTargetEnv",
+            "PlaceAboveSiteEnv",
+        }
+        and not args.grasp_model
+    ):
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
