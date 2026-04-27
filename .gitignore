@@ -15,4 +15,3 @@ myenv/
 .pyc
 
 MUJOCO_LOG.TXT
-melogs/
