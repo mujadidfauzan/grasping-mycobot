@@ -198,6 +198,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
         self._reward_target_orient_weight = float(reward_target_orient_weight)
         self._reward_target_tanh_orient_weight = float(reward_target_tanh_orient_weight)
+        self._reward_bonus = float(reward_bonus)
         self._success_distance = float(success_distance)
         self._success_angle_rad = np.deg2rad(float(success_angle_deg))
         self._success_steps_required = int(success_steps_required)
@@ -1156,7 +1157,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         )
         reward_bonus = 0.0
         if target_pose_aligned:
-            reward_bonus = self.reward_bonus
+            reward_bonus = self._reward_bonus
         reward_target = -target_dist * self._reward_target_weight
         reward_target_tanh = (
             1.0 - float(np.tanh(target_dist / 0.05))
