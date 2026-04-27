@@ -49,22 +49,17 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         xml_file: str = str(DEFAULT_XML_PATH),
         frame_skip: int = 5,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
-        reward_target_weight: float = 10.0,
+        reward_target_weight: float = 5.0,
         reward_target_tanh_weight: float = 1.0,
-        reward_target_orient_weight: float = 0.4,
+        reward_target_orient_weight: float = 2.0,
+        reward_target_tanh_orient_weight: float = 1.0,
         reward_target_bonus: float = 10.0,
-        reward_target_far_penalty: float = 10.0,
-        reward_stay_bonus: float = 16.0,
-        reward_drop_penalty: float = 12.0,
-        reward_move_away_penalty: float = 100.0,
-        control_penalty_weight: float = 0.001,
         success_distance: float = 0.01,
-        success_angle_deg: float = 20.0,
+        success_angle_deg: float = 10.0,
         success_steps_required: int = 10,
         terminate_ee_obj_distance: float = 0.05,
         max_episode_steps: int = 300,
         arm_action_scale: float = 0.01,
-        gripper_action_scale: float = 0.003,
         gripper_command_threshold: float = -0.01,
         target_x_range: tuple[float, float] = (0.19, 0.25),
         target_y_range: tuple[float, float] = (-0.05, 0.05),
@@ -72,9 +67,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         target_z_range: tuple[float, float] | None = None,
         target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
         target_height_above_place: float = 0.0,
+        object_reference_z_offset: float = -0.015,
+        target_place_reference_z_offset: float = 0.015,
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
-        target_place_body_name: str = "target_place_body",
         grasp_model_path: str | None = None,
         grasp_env_name: str = "GraspingEnvV2",
         grasp_xml_file: str | None = None,
@@ -87,9 +83,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         grasp_ctrl_close_threshold: float = 0.005,
         grasp_transfer_settle_steps: int = 5,
         allow_grasp_fallback_snapshot: bool = True,
-        drop_penalty_min_target_progress: float = 0.03,
-        move_away_distance_threshold: float = 0.002,
-        target_far_distance_threshold: float = 0.10,
         place_above_model_path: str | None = None,
         place_above_xml_file: str | None = None,
         place_above_max_steps: int = 150,
@@ -111,19 +104,14 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             reward_target_weight,
             reward_target_tanh_weight,
             reward_target_orient_weight,
+            reward_target_tanh_orient_weight,
             reward_target_bonus,
-            reward_target_far_penalty,
-            reward_stay_bonus,
-            reward_drop_penalty,
-            reward_move_away_penalty,
-            control_penalty_weight,
             success_distance,
             success_angle_deg,
             success_steps_required,
             terminate_ee_obj_distance,
             max_episode_steps,
             arm_action_scale,
-            gripper_action_scale,
             gripper_command_threshold,
             target_x_range,
             target_y_range,
@@ -131,9 +119,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             target_z_range,
             target_place_yaw_range,
             target_height_above_place,
+            object_reference_z_offset,
+            target_place_reference_z_offset,
             ee_site_name,
             target_site_name,
-            target_place_body_name,
             grasp_model_path,
             grasp_env_name,
             grasp_xml_file,
@@ -146,9 +135,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             grasp_ctrl_close_threshold,
             grasp_transfer_settle_steps,
             allow_grasp_fallback_snapshot,
-            drop_penalty_min_target_progress,
-            move_away_distance_threshold,
-            target_far_distance_threshold,
             place_above_model_path,
             place_above_xml_file,
             place_above_max_steps,
@@ -217,38 +203,22 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._reward_target_weight = float(reward_target_weight)
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
         self._reward_target_orient_weight = float(reward_target_orient_weight)
+        self._reward_target_tanh_orient_weight = float(reward_target_tanh_orient_weight)
         self._reward_target_bonus = float(reward_target_bonus)
-        self._reward_target_far_penalty = float(reward_target_far_penalty)
-        self._reward_stay_bonus = float(reward_stay_bonus)
-        self._reward_drop_penalty = float(reward_drop_penalty)
-        self._reward_move_away_penalty = float(reward_move_away_penalty)
-        self._control_penalty_weight = float(control_penalty_weight)
         self._success_distance = float(success_distance)
         self._success_angle_rad = np.deg2rad(float(success_angle_deg))
         self._success_steps_required = int(success_steps_required)
         self._terminate_ee_obj_distance = float(terminate_ee_obj_distance)
+        if self._success_distance <= 0.0:
+            raise ValueError("success_distance must be greater than 0.")
+        if self._success_angle_rad <= 0.0:
+            raise ValueError("success_angle_deg must be greater than 0.")
+        if self._success_steps_required <= 0:
+            raise ValueError("success_steps_required must be greater than 0.")
         if self._terminate_ee_obj_distance <= 0.0:
             raise ValueError("terminate_ee_obj_distance must be greater than 0.")
-        self._drop_penalty_min_target_progress = float(drop_penalty_min_target_progress)
-        self._move_away_distance_threshold = float(move_away_distance_threshold)
-        self._target_far_distance_threshold = float(target_far_distance_threshold)
-        if self._drop_penalty_min_target_progress < 0.0:
-            raise ValueError(
-                "drop_penalty_min_target_progress must be greater than or equal to 0."
-            )
-        if self._move_away_distance_threshold < 0.0:
-            raise ValueError(
-                "move_away_distance_threshold must be greater than or equal to 0."
-            )
-        if self._reward_target_far_penalty < 0.0:
-            raise ValueError(
-                "reward_target_far_penalty must be greater than or equal to 0."
-            )
-        if self._target_far_distance_threshold <= 0.0:
-            raise ValueError("target_far_distance_threshold must be greater than 0.")
         self.max_episode_steps = int(max_episode_steps)
         self._arm_action_scale = float(arm_action_scale)
-        self._gripper_action_scale = float(gripper_action_scale)
         self._gripper_command_threshold = float(gripper_command_threshold)
         self._target_x_range = tuple(float(value) for value in target_x_range)
         self._target_y_range = tuple(float(value) for value in target_y_range)
@@ -262,9 +232,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             float(value) for value in target_place_yaw_range
         )
         self._target_height_above_place = float(target_height_above_place)
+        self._object_reference_z_offset = float(object_reference_z_offset)
+        self._target_place_reference_z_offset = float(target_place_reference_z_offset)
         self.ee_site_name = str(ee_site_name)
         self.target_site_name = str(target_site_name)
-        self.target_place_body_name = str(target_place_body_name)
         if self._target_z_range[0] > self._target_z_range[1]:
             raise ValueError("target_z_range must be ordered as (min_z, max_z).")
         if self._target_place_yaw_range[0] > self._target_place_yaw_range[1]:
@@ -332,20 +303,24 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             body_name = f"obj_{obj_name}"
             joint_name = f"obj_{obj_name}_joint"
             site_name = f"obj_{obj_name}_ref"
+            geom_name = f"obj_{obj_name}_geom"
 
             body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
             joint_id = mujoco.mj_name2id(
                 self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
             )
             site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+            geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
 
             self.object_info[obj_name] = {
                 "body_name": body_name,
                 "joint_name": joint_name,
                 "site_name": site_name,
+                "geom_name": geom_name,
                 "body_id": body_id,
                 "joint_id": joint_id,
                 "site_id": site_id,
+                "geom_id": geom_id,
                 "qposadr": int(self.model.jnt_qposadr[joint_id]),
                 "dofadr": int(self.model.jnt_dofadr[joint_id]),
             }
@@ -396,9 +371,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         )
         self.target_body_id = int(self.model.site_bodyid[self.target_site_id])
         self.target_body_name = str(
-            mujoco.mj_id2name(
-                self.model, mujoco.mjtObj.mjOBJ_BODY, self.target_body_id
-            )
+            mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, self.target_body_id)
         )
         self._target_site_local_pos = self.model.site_pos[self.target_site_id].copy()
         self._target_site_local_quat = self._normalize_quat(
@@ -415,7 +388,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             )
 
         self.active_obj_name = self.object_names[0]
-        self.active_place_name = self.place_name_by_object[self.active_obj_name]
 
         self.gripL_jid = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_JOINT, "Slider_10"
@@ -447,16 +419,15 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self.gripper_state = "closed"
+        self.release_latched = False
+        self.last_gripper_should_open = False
+        self.last_insert_target_dist = np.inf
+        self.last_insert_target_angle = np.inf
         self.sampled_object_yaw = 0.0
         self.applied_object_yaw = 0.0
         self.initial_obj_site_pos = np.zeros(3, dtype=np.float64)
-        self.initial_object_target_dist = np.inf
-        self.best_object_target_dist = np.inf
-        self.previous_object_target_dist = np.inf
         self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
-        self.sampled_target_site_quat = np.array(
-            [1.0, 0.0, 0.0, 0.0], dtype=np.float64
-        )
+        self.sampled_target_site_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.sampled_target_site_yaw = 0.0
         self.applied_target_site_yaw = 0.0
         self.sampled_target_place_pos = np.zeros(3, dtype=np.float64)
@@ -465,8 +436,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         )
         self.sampled_target_place_yaw = 0.0
         self.applied_target_place_yaw = 0.0
-
-        self._disable_grasp_constraints()
 
         dummy_obs = self._get_obs()
         self.observation_space = Box(
@@ -543,6 +512,18 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
     def _get_site_pose(self, site_name: str) -> tuple[np.ndarray, np.ndarray]:
         return self.data.site(site_name).xpos.copy(), self._get_site_quat(site_name)
 
+    def _offset_pose_along_local_z(
+        self, pos: np.ndarray, quat: np.ndarray, z_offset: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        pos = np.asarray(pos, dtype=np.float64).copy()
+        quat = self._normalize_quat(np.asarray(quat, dtype=np.float64))
+        if z_offset != 0.0:
+            pos += self._quat_rotate_vector(
+                quat,
+                np.array([0.0, 0.0, float(z_offset)], dtype=np.float64),
+            )
+        return pos, quat
+
     def _rotation_vector(
         self, source_quat: np.ndarray, target_quat: np.ndarray
     ) -> np.ndarray:
@@ -575,34 +556,113 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         rot_error = self._rotation_vector(source_quat, target_quat)
         return pos_error, rot_error
 
-    def _get_required_target_progress(self) -> float:
-        if not np.isfinite(self.initial_object_target_dist):
-            return float(self._drop_penalty_min_target_progress)
-        return float(
-            min(
-                self._drop_penalty_min_target_progress,
-                max(0.0, self.initial_object_target_dist - self._success_distance),
-            )
-        )
-
-    def _get_target_progress(self) -> float:
-        if not (
-            np.isfinite(self.initial_object_target_dist)
-            and np.isfinite(self.best_object_target_dist)
-        ):
-            return 0.0
-        return float(
-            max(0.0, self.initial_object_target_dist - self.best_object_target_dist)
-        )
-
     def _get_active_obj_info(self) -> dict[str, int | str]:
         return self.object_info[self.active_obj_name]
 
     def _get_active_place_info(self) -> dict[str, int | str]:
         return self.place_info[self.active_obj_name]
 
+    def _count_contacts_between_geoms(self, geom1_id: int, geom2_id: int) -> int:
+        contact_count = 0
+        for contact_index in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_index]
+            if (int(contact.geom1) == geom1_id and int(contact.geom2) == geom2_id) or (
+                int(contact.geom1) == geom2_id and int(contact.geom2) == geom1_id
+            ):
+                contact_count += 1
+        return contact_count
+
+    def _get_pose_in_body_frame(
+        self,
+        world_pos: np.ndarray,
+        world_quat: np.ndarray,
+        body_pos: np.ndarray,
+        body_quat: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        body_quat = self._normalize_quat(np.asarray(body_quat, dtype=np.float64))
+        body_quat_conj = self._quat_conjugate(body_quat)
+        local_pos = self._quat_rotate_vector(
+            body_quat_conj,
+            np.asarray(world_pos, dtype=np.float64)
+            - np.asarray(body_pos, dtype=np.float64),
+        )
+        local_quat = self._normalize_quat(
+            self._quat_multiply(
+                body_quat_conj, np.asarray(world_quat, dtype=np.float64)
+            )
+        )
+        return local_pos, local_quat
+
+    def _get_insertion_metrics(self) -> dict[str, np.ndarray | float | int]:
+        obj_pos, obj_quat = self._get_active_obj_pose()
+        active_obj_info = self._get_active_obj_info()
+        active_place_info = self._get_active_place_info()
+        place_body_name = str(active_place_info["body_name"])
+        place_body = self.data.body(place_body_name)
+        place_body_pos = place_body.xpos.copy()
+        place_body_quat = self._normalize_quat(place_body.xquat.copy())
+
+        obj_local_pos, obj_local_quat = self._get_pose_in_body_frame(
+            obj_pos,
+            obj_quat,
+            place_body_pos,
+            place_body_quat,
+        )
+        target_local_pos, target_local_quat = self._place_site_local_pose_by_object[
+            self.active_obj_name
+        ]
+        target_local_pos = target_local_pos.copy()
+        target_local_pos[2] += self._target_place_reference_z_offset
+        local_pos_error, local_rot_error = self._get_pose_error(
+            obj_local_pos,
+            obj_local_quat,
+            target_local_pos,
+            target_local_quat,
+        )
+
+        radial_error = float(np.linalg.norm(local_pos_error[:2]))
+        height_error = float(local_pos_error[2])
+        rot_error = float(np.linalg.norm(local_rot_error))
+        object_place_contact_count = self._count_contacts_between_geoms(
+            int(active_obj_info["geom_id"]),
+            int(active_place_info["geom_id"]),
+        )
+        pose_aligned = bool(
+            radial_error < self._success_distance
+            and abs(height_error) < self._success_distance
+            and rot_error < self._success_angle_rad
+        )
+
+        return {
+            "object_local_pos": obj_local_pos,
+            "object_local_quat": obj_local_quat,
+            "target_local_pos": target_local_pos.copy(),
+            "target_local_quat": target_local_quat.copy(),
+            "object_target_local_pos_error": local_pos_error,
+            "object_target_local_rot_error": local_rot_error,
+            "object_target_local_radial_error": radial_error,
+            "object_target_local_height_error": height_error,
+            "object_target_local_angle_error": rot_error,
+            "object_place_contact_count": int(object_place_contact_count),
+            "object_place_in_contact": int(object_place_contact_count > 0),
+            "insert_pose_aligned": int(pose_aligned),
+            "inserted_contact_candidate": int(
+                pose_aligned and object_place_contact_count > 0
+            ),
+        }
+
     def _get_ee_pose(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_site_pose(self.ee_site_name)
+
+    def _get_active_place_site_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        place_pos, place_quat = self._get_site_pose(
+            str(self._get_active_place_info()["site_name"])
+        )
+        return self._offset_pose_along_local_z(
+            place_pos,
+            place_quat,
+            self._target_place_reference_z_offset,
+        )
 
     def _get_target_pose(self) -> tuple[np.ndarray, np.ndarray]:
         target_pos, target_quat = self._get_site_pose(self.target_site_name)
@@ -611,7 +671,31 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         return target_pos, target_quat
 
     def _get_active_obj_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_site_pose(str(self._get_active_obj_info()["site_name"]))
+        obj_pos, obj_quat = self._get_site_pose(
+            str(self._get_active_obj_info()["site_name"])
+        )
+        return self._offset_pose_along_local_z(
+            obj_pos,
+            obj_quat,
+            self._object_reference_z_offset,
+        )
+
+    def _get_target_pose_alignment(self) -> tuple[float, float, bool]:
+        obj_pos, obj_quat = self._get_active_obj_pose()
+        target_pos, target_quat = self._get_target_pose()
+        obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
+            obj_pos,
+            obj_quat,
+            target_pos,
+            target_quat,
+        )
+        target_dist = float(np.linalg.norm(obj_target_pos_error))
+        target_angle = float(np.linalg.norm(obj_target_rot_error))
+        target_pose_aligned = bool(
+            target_dist < self._success_distance
+            and target_angle < self._success_angle_rad
+        )
+        return target_dist, target_angle, target_pose_aligned
 
     def _set_closed_gripper_target(self, ctrl: np.ndarray) -> None:
         self.gripper_state = "closed"
@@ -620,6 +704,21 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
     def _set_open_gripper_target(self, ctrl: np.ndarray) -> None:
         self.gripper_state = "open"
         ctrl[-2:] = self._gripper_open_target
+
+    def _apply_grasp_heuristic(self, ctrl: np.ndarray) -> None:
+        target_dist, target_angle, target_pose_aligned = (
+            self._get_target_pose_alignment()
+        )
+        should_open = bool(target_pose_aligned)
+        self.release_latched = bool(should_open or self.release_latched)
+        self.last_gripper_should_open = should_open
+        self.last_insert_target_dist = target_dist
+        self.last_insert_target_angle = target_angle
+
+        if self.release_latched:
+            self._set_open_gripper_target(ctrl)
+        else:
+            self._set_closed_gripper_target(ctrl)
 
     def _apply_gripper_command(self, ctrl: np.ndarray, command: float) -> None:
         if float(command) <= self._gripper_command_threshold:
@@ -630,34 +729,83 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
     def _update_gripper_state_from_target(self, target: np.ndarray) -> None:
         self.gripper_state = "closed" if target[-2] < target[-1] else "open"
 
+    def _prepare_step_action(self, action: np.ndarray) -> np.ndarray:
+        action = self._coerce_policy_action(action)
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        self.last_action = action.astype(np.float32)
+        return action
+
+    def _finalize_target_ctrl(self, ctrl: np.ndarray) -> np.ndarray:
+        ctrl = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
+        self._update_gripper_state_from_target(ctrl)
+        return ctrl
+
+    def _simulate_ctrl(self, ctrl: np.ndarray, frame_skip: int) -> None:
+        self.do_simulation(ctrl, frame_skip)
+        self._sync_target_site_to_active_place()
+        mujoco.mj_forward(self.model, self.data)
+
+    def _build_step_ctrl(self, action: np.ndarray) -> np.ndarray:
+        target_ctrl = self.data.ctrl.copy()
+        target_ctrl[: self._arm_ctrl_dim] += self._arm_action_scale * action
+        self._apply_grasp_heuristic(target_ctrl)
+        return self._finalize_target_ctrl(target_ctrl)
+
+    def _apply_post_simulation_gripper_heuristic(self) -> bool:
+        # Re-evaluate the release heuristic after the arm motion changes the object pose.
+        gripper_state_before_heuristic = self.gripper_state
+        heuristic_ctrl = self.data.ctrl.copy()
+        self._apply_grasp_heuristic(heuristic_ctrl)
+        heuristic_ctrl = self._finalize_target_ctrl(heuristic_ctrl)
+
+        if np.allclose(heuristic_ctrl[-2:], self.data.ctrl[-2:]):
+            return False
+
+        gripper_auto_opened = (
+            gripper_state_before_heuristic != "open" and self.gripper_state == "open"
+        )
+        self._simulate_ctrl(heuristic_ctrl, frame_skip=1)
+        return gripper_auto_opened
+
+    def _get_step_termination(
+        self, reward_info: dict[str, float | int]
+    ) -> tuple[bool, bool]:
+        terminated_success = self.success_counter >= self._success_steps_required
+        terminated_ee_obj_far = bool(
+            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
+            and not bool(reward_info["target_pose_aligned"])
+        )
+        return terminated_success, terminated_ee_obj_far
+
     def _coerce_policy_action(self, action: np.ndarray) -> np.ndarray:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape == self.action_space.shape:
             return action
 
-        insert_action_shape = (self._arm_ctrl_dim + 1,)
-        if action.shape == insert_action_shape:
-            return action[: self._arm_ctrl_dim]
+        legacy_insert_shape = (self._arm_ctrl_dim + 1,)
+        if action.shape == legacy_insert_shape:
+            return action[: self._arm_ctrl_dim].astype(np.float64, copy=False)
 
         legacy_shape = (int(self.model.nu),)
         if action.shape == legacy_shape:
-            return action[: self._arm_ctrl_dim]
+            return action[: self._arm_ctrl_dim].astype(np.float64, copy=False)
 
         raise ValueError(
             "Unexpected action shape for InsertTargetEnv. "
-            f"Expected {self.action_space.shape} (arm only), "
-            f"{insert_action_shape} (arm + gripper command), "
+            f"Expected {self.action_space.shape} (arm only with heuristic gripper), "
+            f"{legacy_insert_shape} (legacy arm + gripper command), "
             f"or legacy {legacy_shape}, got {action.shape}."
         )
 
     def _set_active_place_visual(self) -> None:
         for obj_name, info in self.place_info.items():
             rgba = self.place_geom_rgba[obj_name].copy()
-            rgba[3] = 0.0
+            rgba[3] = (
+                self.place_geom_rgba[obj_name][3]
+                if obj_name == self.active_obj_name
+                else 0.0
+            )
             self.model.geom_rgba[int(info["geom_id"])] = rgba
-
-    def _disable_grasp_constraints(self) -> None:
-        return None
 
     @staticmethod
     def _joint_name_map(model) -> dict[str, int]:
@@ -692,7 +840,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         active_place_quat: np.ndarray,
     ) -> None:
         identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        self.active_place_name = self.place_name_by_object[self.active_obj_name]
 
         for index, obj_name in enumerate(self.object_names):
             info = self.place_info[obj_name]
@@ -738,7 +885,9 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
     def _target_site_pose_to_place_body_pose(
         self, target_site_pos: np.ndarray, target_site_quat: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        local_pos, local_quat = self._place_site_local_pose_by_object[self.object_names[0]]
+        local_pos, local_quat = self._place_site_local_pose_by_object[
+            self.object_names[0]
+        ]
         return self._pose_to_body_transform(
             target_site_pos,
             target_site_quat,
@@ -755,6 +904,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         )
         self.model.body_pos[self.target_body_id] = body_pos
         self.model.body_quat[self.target_body_id] = body_quat
+
+    def _sync_target_site_to_active_place(self) -> None:
+        place_site_pos, place_site_quat = self._get_active_place_site_pose()
+        self._set_target_site_pose_in_model(place_site_pos, place_site_quat)
 
     def _sample_target_site_pose(self) -> tuple[np.ndarray, np.ndarray, float]:
         target_site_pos = np.array(
@@ -1039,7 +1192,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.set_state(qpos, qvel)
         self.data.ctrl[:] = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
         self._update_gripper_state_from_target(self.data.ctrl)
-        self._disable_grasp_constraints()
         mujoco.mj_forward(self.model, self.data)
 
         if self._grasp_transfer_settle_steps > 0:
@@ -1050,88 +1202,88 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     def step(self, action):
         self.current_step += 1
-        action = self._coerce_policy_action(action)
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        self.last_action = action.astype(np.float32)
+        action = self._prepare_step_action(action)
 
-        target_ctrl = self.data.ctrl.copy()
-        target_ctrl[: self._arm_ctrl_dim] += (
-            self._arm_action_scale * action[: self._arm_ctrl_dim]
-        )
-        self._set_closed_gripper_target(target_ctrl)
-        target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
-        self._update_gripper_state_from_target(target_ctrl)
-        self._disable_grasp_constraints()
-
-        self.do_simulation(target_ctrl, self.frame_skip)
+        target_ctrl = self._build_step_ctrl(action)
+        self._simulate_ctrl(target_ctrl, self.frame_skip)
+        gripper_auto_opened = self._apply_post_simulation_gripper_heuristic()
 
         observation = self._get_obs()
-        reward, reward_info = self._get_rew(action)
-        terminated_success = self.success_counter >= self._success_steps_required
-        terminated_ee_obj_far = bool(
-            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
-            and not bool(reward_info["target_pose_aligned"])
+        reward, reward_info = self._get_rew()
+        terminated_success, terminated_ee_obj_far = self._get_step_termination(
+            reward_info
         )
         terminated = terminated_success or terminated_ee_obj_far
         truncated = self.current_step >= self.max_episode_steps
-        reward_info["terminated_success"] = int(terminated_success)
-        reward_info["terminated_ee_obj_far"] = int(terminated_ee_obj_far)
+        reward_info.update(
+            terminated_success=int(terminated_success),
+            terminated_ee_obj_far=int(terminated_ee_obj_far),
+            gripper_auto_opened=int(gripper_auto_opened),
+        )
 
         if self.render_mode == "human":
             self.render()
 
         return observation, reward, terminated, truncated, reward_info
 
-    def _get_rew(self, action: np.ndarray) -> tuple[float, dict]:
+    def _get_rew(self) -> tuple[float, dict]:
         obj_pos, obj_quat = self._get_active_obj_pose()
-        target_pos, target_quat = self._get_target_pose()
         ee_pos, ee_quat = self._get_ee_pose()
 
-        ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
-            ee_pos, ee_quat, obj_pos, obj_quat
+        ee_obj_pos_error, _ = self._get_pose_error(ee_pos, ee_quat, obj_pos, obj_quat)
+        target_dist, target_angle, target_pose_aligned = (
+            self._get_target_pose_alignment()
         )
-        obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
-            obj_pos, obj_quat, target_pos, target_quat
-        )
-
-        target_dist = float(np.linalg.norm(obj_target_pos_error))
-        target_angle = float(np.linalg.norm(obj_target_rot_error))
         ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
-        self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
-
-        target_pose_aligned = bool(
-            target_dist < self._success_distance
-            and target_angle < self._success_angle_rad
-        )
+        insertion_metrics = self._get_insertion_metrics()
         reward_target = -target_dist * self._reward_target_weight
+        reward_target_tanh = (
+            1.0 - float(np.tanh(target_dist / 0.05))
+        ) * self._reward_target_tanh_weight
         reward_target_orient = -target_angle * self._reward_target_orient_weight
-        insertion_bonus = self._reward_target_bonus if target_pose_aligned else 0.0
-        target_far_penalty = (
-            -self._reward_target_far_penalty
-            if target_dist > self._target_far_distance_threshold
-            else 0.0
-        )
+        reward_target_tanh_orient = (
+            1.0 - float(np.tanh(target_angle / 0.5))
+        ) * self._reward_target_tanh_orient_weight
+        reward_target_bonus = self._reward_target_bonus if target_pose_aligned else 0.0
 
         if target_pose_aligned:
             self.success_counter += 1
         else:
             self.success_counter = 0
+
         reward = (
-            reward_target + reward_target_orient + insertion_bonus + target_far_penalty
+            reward_target
+            + reward_target_tanh
+            + reward_target_orient
+            + reward_target_tanh_orient
+            + reward_target_bonus
         )
-        self.previous_object_target_dist = float(target_dist)
 
         reward_info = {
             "ee_object_dist": ee_obj_dist,
             "object_target_dist": target_dist,
             "object_target_rot_error": target_angle,
             "reward_target": float(reward_target),
+            "reward_target_tanh": float(reward_target_tanh),
             "reward_target_orient": float(reward_target_orient),
-            "reward_target_bonus": float(insertion_bonus),
+            "reward_target_tanh_orient": float(reward_target_tanh_orient),
+            "reward_target_bonus": float(reward_target_bonus),
             "target_pose_aligned": int(target_pose_aligned),
-            "target_far_penalty": float(target_far_penalty),
-            "target_too_far": int(target_dist > self._target_far_distance_threshold),
             "gripper_open": int(self.gripper_state == "open"),
+            "gripper_should_open": int(self.last_gripper_should_open),
+            "release_latched": int(self.release_latched),
+            "object_target_local_radial_error": float(
+                insertion_metrics["object_target_local_radial_error"]
+            ),
+            "object_target_local_height_error": float(
+                insertion_metrics["object_target_local_height_error"]
+            ),
+            "object_place_contact_count": int(
+                insertion_metrics["object_place_contact_count"]
+            ),
+            "inserted_contact_candidate": int(
+                insertion_metrics["inserted_contact_candidate"]
+            ),
         }
 
         return float(reward), reward_info
@@ -1140,9 +1292,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.current_step = 0
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
-        self.initial_object_target_dist = np.inf
-        self.best_object_target_dist = np.inf
-        self.previous_object_target_dist = np.inf
+        self.release_latched = False
+        self.last_gripper_should_open = False
+        self.last_insert_target_dist = np.inf
+        self.last_insert_target_angle = np.inf
         (
             self.sampled_target_site_pos,
             self.sampled_target_site_quat,
@@ -1162,19 +1315,20 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             self.sampled_target_place_quat,
         )
         self._restore_place_above_snapshot(snapshot)
-        self._set_target_site_pose_in_model(
-            self.sampled_target_site_pos,
-            self.sampled_target_site_quat,
-        )
         closed_ctrl = self.data.ctrl.copy()
         self._set_closed_gripper_target(closed_ctrl)
         self.data.ctrl[:] = np.clip(closed_ctrl, self._ctrl_low, self._ctrl_high)
         self._update_gripper_state_from_target(self.data.ctrl)
+        self._sync_target_site_to_active_place()
         mujoco.mj_forward(self.model, self.data)
+        self.sampled_target_site_pos, self.sampled_target_site_quat = (
+            self._get_site_pose(self.target_site_name)
+        )
+        self.sampled_target_site_yaw = float(
+            self._quat_to_yaw(self.sampled_target_site_quat)
+        )
 
-        self.initial_obj_site_pos = np.asarray(
-            snapshot["obj_pos"], dtype=np.float64
-        ).copy()
+        self.initial_obj_site_pos = self._get_active_obj_pose()[0].copy()
         self.sampled_object_yaw = float(
             self._quat_to_yaw(np.asarray(snapshot["obj_quat"], dtype=np.float64))
         )
@@ -1184,10 +1338,10 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         target_place_body_quat = self._normalize_quat(
             self.data.body(str(self._get_active_place_info()["body_name"])).xquat.copy()
         )
-        self.applied_target_site_yaw = float(self._quat_to_yaw(self._get_target_pose()[1]))
-        self.applied_target_place_yaw = float(
-            self._quat_to_yaw(target_place_body_quat)
+        self.applied_target_site_yaw = float(
+            self._quat_to_yaw(self._get_target_pose()[1])
         )
+        self.applied_target_place_yaw = float(self._quat_to_yaw(target_place_body_quat))
 
         self._last_place_above_reset_attempts = int(attempt_count)
         self._last_place_above_reset_source = str(reset_source)
@@ -1201,18 +1355,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._last_grasp_init_ee_obj_dist = float(
             snapshot["nested_grasp_init_ee_obj_dist"]
         )
-
-        target_pos, target_quat = self._get_target_pose()
-        obj_pos, obj_quat = self._get_active_obj_pose()
-        obj_target_pos_error, _ = self._get_pose_error(
-            obj_pos,
-            obj_quat,
-            target_pos,
-            target_quat,
-        )
-        self.initial_object_target_dist = float(np.linalg.norm(obj_target_pos_error))
-        self.best_object_target_dist = float(self.initial_object_target_dist)
-        self.previous_object_target_dist = float(self.initial_object_target_dist)
 
         return self._get_obs()
 
@@ -1279,37 +1421,31 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     def export_config(self) -> dict:
         config = export_env_config(self, self._get_obs_components())
-        config["action"]["gripper_policy"] = "fixed_closed"
+        config["action"]["gripper_policy"] = "heuristic_release_on_insert"
         config["action"]["gripper_open_target"] = self._gripper_open_target.tolist()
         config["action"]["gripper_closed_target"] = self._gripper_closed_target.tolist()
         config["reward"]["params"]["reward_target_weight"] = float(
             self._reward_target_weight
         )
-        config["reward"]["params"]["reward_target_tanh_weight"] = 0.0
+        config["reward"]["params"]["reward_target_tanh_weight"] = float(
+            self._reward_target_tanh_weight
+        )
         config["reward"]["params"]["reward_target_orient_weight"] = float(
             self._reward_target_orient_weight
+        )
+        config["reward"]["params"]["reward_target_tanh_orient_weight"] = float(
+            self._reward_target_tanh_orient_weight
         )
         config["reward"]["params"]["reward_target_bonus"] = float(
             self._reward_target_bonus
         )
-        config["reward"]["params"]["reward_target_far_penalty"] = float(
-            self._reward_target_far_penalty
-        )
-        config["reward"]["params"]["target_far_distance_threshold"] = float(
-            self._target_far_distance_threshold
-        )
-        config["reward"]["params"]["reward_stay_bonus"] = 0.0
-        config["reward"]["params"]["reward_drop_penalty"] = 0.0
-        config["reward"]["params"]["control_penalty_weight"] = 0.0
-        config["reward"]["params"]["reward_move_away_penalty"] = 0.0
-        config["reward"]["params"]["move_away_distance_threshold"] = 0.0
         config["task"]["termination_enabled"] = True
         config["task"]["terminate_ee_obj_distance"] = float(
             self._terminate_ee_obj_distance
         )
         config["task"][
             "target_mode"
-        ] = "object_insert_into_xml_target_site_from_place_above_site"
+        ] = "object_insert_into_xml_target_site_synced_to_active_place_site"
         config["task"]["target_site_name"] = self.target_site_name
         config["task"]["target_body_name"] = self.target_body_name
         config["task"]["target_place_body_names"] = {
@@ -1326,6 +1462,12 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "target_z_range": list(self._target_z_range),
             "target_place_yaw_range": list(self._target_place_yaw_range),
         }
+        config["task"]["object_reference_z_offset"] = float(
+            self._object_reference_z_offset
+        )
+        config["task"]["target_place_reference_z_offset"] = float(
+            self._target_place_reference_z_offset
+        )
         config["task"]["grasp_policy_reset"] = {
             "grasp_env_name": self._grasp_env_name,
             "grasp_model_path": str(self._grasp_model_path),
@@ -1365,6 +1507,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos, obj_quat, target_pos, target_quat
         )
+        insertion_metrics = self._get_insertion_metrics()
 
         return {
             "active_object": self.active_obj_name,
@@ -1380,7 +1523,9 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
                 str(self._get_active_place_info()["body_name"])
             ).xpos.copy(),
             "target_place_quat": self._normalize_quat(
-                self.data.body(str(self._get_active_place_info()["body_name"])).xquat.copy()
+                self.data.body(
+                    str(self._get_active_place_info()["body_name"])
+                ).xquat.copy()
             ),
             "ee_obj_pos_error": ee_obj_pos_error,
             "ee_obj_rot_error": ee_obj_rot_error,
@@ -1390,9 +1535,50 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "obj_target_rot_error": obj_target_rot_error,
             "obj_target_dist": float(np.linalg.norm(obj_target_pos_error)),
             "obj_target_angle_rad": float(np.linalg.norm(obj_target_rot_error)),
+            "object_local_pos": np.asarray(
+                insertion_metrics["object_local_pos"], dtype=np.float64
+            ).copy(),
+            "object_local_quat": np.asarray(
+                insertion_metrics["object_local_quat"], dtype=np.float64
+            ).copy(),
+            "target_local_pos": np.asarray(
+                insertion_metrics["target_local_pos"], dtype=np.float64
+            ).copy(),
+            "target_local_quat": np.asarray(
+                insertion_metrics["target_local_quat"], dtype=np.float64
+            ).copy(),
+            "object_target_local_pos_error": np.asarray(
+                insertion_metrics["object_target_local_pos_error"], dtype=np.float64
+            ).copy(),
+            "object_target_local_rot_error": np.asarray(
+                insertion_metrics["object_target_local_rot_error"], dtype=np.float64
+            ).copy(),
+            "object_target_local_radial_error": float(
+                insertion_metrics["object_target_local_radial_error"]
+            ),
+            "object_target_local_height_error": float(
+                insertion_metrics["object_target_local_height_error"]
+            ),
+            "object_target_local_angle_error": float(
+                insertion_metrics["object_target_local_angle_error"]
+            ),
+            "object_place_contact_count": int(
+                insertion_metrics["object_place_contact_count"]
+            ),
+            "object_place_in_contact": bool(
+                insertion_metrics["object_place_in_contact"]
+            ),
+            "insert_pose_aligned": bool(insertion_metrics["insert_pose_aligned"]),
+            "inserted_contact_candidate": bool(
+                insertion_metrics["inserted_contact_candidate"]
+            ),
             "success_angle_rad": float(self._success_angle_rad),
             "success_angle_deg": float(np.rad2deg(self._success_angle_rad)),
             "target_height_above_place": float(self._target_height_above_place),
+            "object_reference_z_offset": float(self._object_reference_z_offset),
+            "target_place_reference_z_offset": float(
+                self._target_place_reference_z_offset
+            ),
             "object_yaw": float(self._quat_to_yaw(obj_quat)),
             "sampled_object_yaw": float(self.sampled_object_yaw),
             "applied_object_yaw": float(self.applied_object_yaw),
@@ -1402,20 +1588,21 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "applied_target_site_yaw": float(self.applied_target_site_yaw),
             "target_place_yaw": float(
                 self._quat_to_yaw(
-                    self.data.body(str(self._get_active_place_info()["body_name"])).xquat.copy()
+                    self.data.body(
+                        str(self._get_active_place_info()["body_name"])
+                    ).xquat.copy()
                 )
             ),
             "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
             "applied_target_place_yaw": float(self.applied_target_place_yaw),
-            "gripper_assist_mix": 0.0,
-            "gripper_should_close": None,
+            "gripper_assist_mix": 1.0,
+            "gripper_should_close": bool(not self.last_gripper_should_open),
+            "gripper_should_open": bool(self.last_gripper_should_open),
+            "release_latched": bool(self.release_latched),
+            "heuristic_target_dist": float(self.last_insert_target_dist),
+            "heuristic_target_angle_rad": float(self.last_insert_target_angle),
             "gripper_state": self.gripper_state,
             "success_counter": int(self.success_counter),
-            "initial_object_target_dist": float(self.initial_object_target_dist),
-            "best_object_target_dist": float(self.best_object_target_dist),
-            "previous_object_target_dist": float(self.previous_object_target_dist),
-            "target_progress": float(self._get_target_progress()),
-            "required_target_progress": float(self._get_required_target_progress()),
             "last_action": self.last_action.copy(),
             "grasp_reset_attempts": int(self._last_grasp_reset_attempts),
             "grasp_init_lift_height": float(self._last_grasp_init_lift_height),
@@ -1430,19 +1617,18 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
                 self._last_place_above_init_ee_obj_dist
             ),
             "reward_target_weight": float(self._reward_target_weight),
+            "reward_target_tanh_weight": float(self._reward_target_tanh_weight),
+            "reward_target_orient_weight": float(self._reward_target_orient_weight),
+            "reward_target_tanh_orient_weight": float(
+                self._reward_target_tanh_orient_weight
+            ),
             "reward_target_bonus": float(self._reward_target_bonus),
-            "reward_target_far_penalty": float(self._reward_target_far_penalty),
-            "target_far_distance_threshold": float(self._target_far_distance_threshold),
             "terminate_ee_obj_distance": float(self._terminate_ee_obj_distance),
             "ee_obj_too_far": bool(
                 np.linalg.norm(ee_obj_pos_error) >= self._terminate_ee_obj_distance
             ),
-            "target_too_far": bool(
-                np.linalg.norm(obj_target_pos_error)
-                > self._target_far_distance_threshold
-            ),
             "termination_enabled": True,
-            "task_mode": "object_insert_into_xml_target_site_from_place_above_site",
+            "task_mode": "object_insert_into_xml_target_site_synced_to_active_place_site",
         }
 
     def close(self):
