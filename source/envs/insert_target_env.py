@@ -58,7 +58,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         success_angle_deg: float = 10.0,
         success_steps_required: int = 10,
         terminate_ee_obj_distance: float = 0.05,
-        max_episode_steps: int = 300,
+        max_episode_steps: int = 100,
         arm_action_scale: float = 0.01,
         gripper_command_threshold: float = -0.01,
         target_x_range: tuple[float, float] = (0.19, 0.25),
@@ -1130,7 +1130,9 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         terminated_success, terminated_ee_obj_far = self._get_step_termination(
             reward_info
         )
-        terminated = terminated_success or terminated_ee_obj_far
+        if terminated_success:
+            print(f"Episode terminated with success at step {self.current_step}.")
+        terminated = terminated_ee_obj_far
         truncated = self.current_step >= self.max_episode_steps
         reward_info.update(
             terminated_success=int(terminated_success),
