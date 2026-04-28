@@ -61,8 +61,11 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         max_episode_steps: int = 100,
         arm_action_scale: float = 0.01,
         gripper_command_threshold: float = -0.01,
+        gripper_open_xy_threshold: float = 0.008,
+        gripper_open_z_threshold: float = 0.05,
+        gripper_open_angle_deg: float = 10.0,
         target_x_range: tuple[float, float] = (0.19, 0.25),
-        target_y_range: tuple[float, float] = (-0.05, 0.05),
+        target_y_range: tuple[float, float] = (-0.10, 0.10),
         target_place_z: float = 0.025,
         target_z_range: tuple[float, float] | None = None,
         target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
@@ -110,6 +113,9 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             max_episode_steps,
             arm_action_scale,
             gripper_command_threshold,
+            gripper_open_xy_threshold,
+            gripper_open_z_threshold,
+            gripper_open_angle_deg,
             target_x_range,
             target_y_range,
             target_place_z,
@@ -214,6 +220,15 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.max_episode_steps = int(max_episode_steps)
         self._arm_action_scale = float(arm_action_scale)
         self._gripper_command_threshold = float(gripper_command_threshold)
+        self._gripper_open_xy_threshold = float(gripper_open_xy_threshold)
+        self._gripper_open_z_threshold = float(gripper_open_z_threshold)
+        self._gripper_open_angle_rad = np.deg2rad(float(gripper_open_angle_deg))
+        if self._gripper_open_xy_threshold <= 0.0:
+            raise ValueError("gripper_open_xy_threshold must be greater than 0.")
+        if self._gripper_open_z_threshold <= 0.0:
+            raise ValueError("gripper_open_z_threshold must be greater than 0.")
+        if self._gripper_open_angle_rad <= 0.0:
+            raise ValueError("gripper_open_angle_deg must be greater than 0.")
         self._target_x_range = tuple(float(value) for value in target_x_range)
         self._target_y_range = tuple(float(value) for value in target_y_range)
         self._target_place_z = float(target_place_z)
@@ -398,7 +413,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
                 "InsertTargetEnv expects arm actuators plus 2 gripper actuators."
             )
         self._arm_ctrl_dim = int(self.model.nu - 2)
-        self._policy_action_dim = self._arm_ctrl_dim + 1
+        self._policy_action_dim = self._arm_ctrl_dim
         self.action_space = Box(
             low=-1.0,
             high=1.0,
@@ -410,6 +425,11 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self.gripper_state = "closed"
+        self.gripper_release_latched = False
+        self.last_gripper_should_open = False
+        self.last_gripper_open_xy_error = np.full(2, np.inf, dtype=np.float64)
+        self.last_gripper_open_z_error = np.inf
+        self.last_gripper_open_angle = np.inf
         self.sampled_object_yaw = 0.0
         self.applied_object_yaw = 0.0
         self.initial_obj_site_pos = np.zeros(3, dtype=np.float64)
@@ -661,59 +681,8 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.gripper_state = "open"
         ctrl[-2:] = self._gripper_open_target
 
-    def _apply_gripper_command(self, ctrl: np.ndarray, command: float) -> None:
-        if float(command) <= self._gripper_command_threshold:
-            self._set_closed_gripper_target(ctrl)
-        else:
-            self._set_open_gripper_target(ctrl)
-
     def _update_gripper_state_from_target(self, target: np.ndarray) -> None:
         self.gripper_state = "closed" if target[-2] < target[-1] else "open"
-
-    def _prepare_step_action(self, action: np.ndarray) -> np.ndarray:
-        action = self._coerce_policy_action(action)
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        self.last_action = action.astype(np.float32)
-        return action
-
-    def _finalize_target_ctrl(self, ctrl: np.ndarray) -> np.ndarray:
-        ctrl = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
-        self._update_gripper_state_from_target(ctrl)
-        return ctrl
-
-    def _simulate_ctrl(self, ctrl: np.ndarray, frame_skip: int) -> None:
-        self.do_simulation(ctrl, frame_skip)
-        self._sync_target_site_to_active_place()
-        mujoco.mj_forward(self.model, self.data)
-
-    def _build_step_ctrl(self, action: np.ndarray) -> np.ndarray:
-        target_ctrl = self.data.ctrl.copy()
-        target_ctrl[: self._arm_ctrl_dim] += (
-            self._arm_action_scale * action[: self._arm_ctrl_dim]
-        )
-        self._apply_gripper_command(target_ctrl, action[-1])
-        return self._finalize_target_ctrl(target_ctrl)
-
-    def _get_step_termination(
-        self, reward_info: dict[str, float | int]
-    ) -> tuple[bool, bool]:
-        terminated_success = self.success_counter >= self._success_steps_required
-        terminated_ee_obj_far = bool(
-            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
-            and not bool(reward_info["target_pose_aligned"])
-        )
-        return terminated_success, terminated_ee_obj_far
-
-    def _coerce_policy_action(self, action: np.ndarray) -> np.ndarray:
-        action = np.asarray(action, dtype=np.float64).reshape(-1)
-        if action.shape == self.action_space.shape:
-            return action
-
-        raise ValueError(
-            "Unexpected action shape for InsertTargetEnv. "
-            f"Expected {self.action_space.shape} (arm + 1 gripper command), "
-            f"got {action.shape}."
-        )
 
     def _set_active_place_visual(self) -> None:
         for obj_name, info in self.place_info.items():
@@ -804,8 +773,9 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self, target_site_pos: np.ndarray, target_site_quat: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         local_pos, local_quat = self._place_site_local_pose_by_object[
-            self.object_names[0]
+            self.active_obj_name
         ]
+
         return self._pose_to_body_transform(
             target_site_pos,
             target_site_quat,
@@ -1120,15 +1090,60 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     def step(self, action):
         self.current_step += 1
-        action = self._prepare_step_action(action)
 
-        target_ctrl = self._build_step_ctrl(action)
-        self._simulate_ctrl(target_ctrl, self.frame_skip)
+        action = np.asarray(action, dtype=np.float64).reshape(-1)
+        if action.shape != self.action_space.shape:
+            raise ValueError(
+                "Unexpected action shape for InsertTargetEnv. "
+                f"Expected {self.action_space.shape} (arm only; gripper is heuristic), "
+                f"got {action.shape}."
+            )
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        self.last_action = action.astype(np.float32)
+
+        target_ctrl = self.data.ctrl.copy()
+        target_ctrl[: self._arm_ctrl_dim] += (
+            self._arm_action_scale * action[: self._arm_ctrl_dim]
+        )
+
+        insertion_metrics = self._get_insertion_metrics()
+        pos_error = np.asarray(
+            insertion_metrics["object_target_local_pos_error"], dtype=np.float64
+        )
+        angle_error = float(insertion_metrics["object_target_local_angle_error"])
+        xy_error = np.abs(pos_error[:2])
+        z_error = float(abs(pos_error[2]))
+        should_open = bool(
+            np.all(xy_error < self._gripper_open_xy_threshold)
+            and z_error < self._gripper_open_z_threshold
+            and angle_error < self._gripper_open_angle_rad
+        )
+
+        self.gripper_release_latched = bool(
+            self.gripper_release_latched or should_open
+        )
+        self.last_gripper_should_open = should_open
+        self.last_gripper_open_xy_error = xy_error.astype(np.float64)
+        self.last_gripper_open_z_error = z_error
+        self.last_gripper_open_angle = angle_error
+
+        if self.gripper_release_latched:
+            self._set_open_gripper_target(target_ctrl)
+        else:
+            self._set_closed_gripper_target(target_ctrl)
+
+        target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
+        self._update_gripper_state_from_target(target_ctrl)
+        self.do_simulation(target_ctrl, self.frame_skip)
+        self._sync_target_site_to_active_place()
+        mujoco.mj_forward(self.model, self.data)
 
         observation = self._get_obs()
         reward, reward_info = self._get_rew()
-        terminated_success, terminated_ee_obj_far = self._get_step_termination(
-            reward_info
+        terminated_success = self.success_counter >= self._success_steps_required
+        terminated_ee_obj_far = bool(
+            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
+            and not bool(reward_info["target_pose_aligned"])
         )
         if terminated_success:
             print(f"Episode terminated with success at step {self.current_step}.")
@@ -1194,6 +1209,12 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "target_pose_aligned": int(target_pose_aligned),
             "moved_away": int(moved_away),
             "gripper_open": int(self.gripper_state == "open"),
+            "gripper_release_latched": int(self.gripper_release_latched),
+            "gripper_should_open": int(self.last_gripper_should_open),
+            "gripper_open_x_error": float(self.last_gripper_open_xy_error[0]),
+            "gripper_open_y_error": float(self.last_gripper_open_xy_error[1]),
+            "gripper_open_z_error": float(self.last_gripper_open_z_error),
+            "gripper_open_angle_error": float(self.last_gripper_open_angle),
             "object_target_local_radial_error": float(
                 insertion_metrics["object_target_local_radial_error"]
             ),
@@ -1214,6 +1235,11 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self.current_step = 0
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
+        self.gripper_release_latched = False
+        self.last_gripper_should_open = False
+        self.last_gripper_open_xy_error = np.full(2, np.inf, dtype=np.float64)
+        self.last_gripper_open_z_error = np.inf
+        self.last_gripper_open_angle = np.inf
         (
             self.sampled_target_site_pos,
             self.sampled_target_site_quat,
@@ -1339,9 +1365,15 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     def export_config(self) -> dict:
         config = export_env_config(self, self._get_obs_components())
-        config["action"]["gripper_policy"] = "binary_open_close"
-        config["action"]["gripper_command_threshold"] = float(
-            self._gripper_command_threshold
+        config["action"]["gripper_policy"] = "manual_release_heuristic"
+        config["action"]["gripper_open_xy_threshold"] = float(
+            self._gripper_open_xy_threshold
+        )
+        config["action"]["gripper_open_z_threshold"] = float(
+            self._gripper_open_z_threshold
+        )
+        config["action"]["gripper_open_angle_deg"] = float(
+            np.rad2deg(self._gripper_open_angle_rad)
         )
         config["action"]["gripper_open_target"] = self._gripper_open_target.tolist()
         config["action"]["gripper_closed_target"] = self._gripper_closed_target.tolist()
@@ -1503,6 +1535,11 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
             "applied_target_place_yaw": float(self.applied_target_place_yaw),
             "gripper_state": self.gripper_state,
+            "gripper_release_latched": bool(self.gripper_release_latched),
+            "gripper_should_open": bool(self.last_gripper_should_open),
+            "gripper_open_xy_error": self.last_gripper_open_xy_error.copy(),
+            "gripper_open_z_error": float(self.last_gripper_open_z_error),
+            "gripper_open_angle_error": float(self.last_gripper_open_angle),
             "success_counter": int(self.success_counter),
             "last_action": self.last_action.copy(),
             "grasp_reset_attempts": int(self._last_grasp_reset_attempts),
