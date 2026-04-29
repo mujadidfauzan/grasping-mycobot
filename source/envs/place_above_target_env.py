@@ -109,6 +109,29 @@ class PlaceAboveTargetEnv(PlaceTargetEnv):
         mujoco.mj_forward(self.model, self.data)
         return self._get_obs()
 
+    def reset_from_grasp_snapshot(
+        self,
+        snapshot: dict,
+        *,
+        seed: int | None = None,
+        reset_source: str = "external_grasp_snapshot",
+        attempt_count: int = 1,
+    ) -> np.ndarray:
+        super().reset_from_grasp_snapshot(
+            snapshot,
+            seed=seed,
+            reset_source=reset_source,
+            attempt_count=attempt_count,
+        )
+        self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
+
+        closed_ctrl = self.data.ctrl.copy()
+        self._set_closed_gripper_target(closed_ctrl)
+        self.data.ctrl[:] = np.clip(closed_ctrl, self._ctrl_low, self._ctrl_high)
+        self._update_gripper_state_from_target(self.data.ctrl)
+        mujoco.mj_forward(self.model, self.data)
+        return self._get_obs()
+
     def step(self, action):
         self.current_step += 1
         action = self._coerce_policy_action(action)

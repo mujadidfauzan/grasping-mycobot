@@ -7,6 +7,7 @@ import numpy as np
 from gymnasium import utils
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
+from gymnasium.utils import seeding
 
 from .config_export import capture_init_config, export_env_config
 from .place_target_env import DEFAULT_GRASP_XML_PATH, GRASP_ENV_REGISTRY
@@ -849,14 +850,19 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         )
         return obs.astype(np.float32)
 
-    def reset_model(self):
+    def _initialize_from_grasp_snapshot(
+        self,
+        snapshot: dict,
+        *,
+        reset_source: str,
+        attempt_count: int,
+    ) -> np.ndarray:
         self.current_step = 0
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self.initial_object_target_dist = np.inf
         self.best_object_target_dist = np.inf
 
-        snapshot, reset_source, attempt_count = self._sample_grasp_reset_snapshot()
         self._restore_grasp_snapshot(snapshot)
         self._restore_default_place_poses()
         self._move_inactive_places_away()
@@ -891,6 +897,30 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         self.best_object_target_dist = float(self.initial_object_target_dist)
 
         return self._get_obs()
+
+    def reset_from_grasp_snapshot(
+        self,
+        snapshot: dict,
+        *,
+        seed: int | None = None,
+        reset_source: str = "external_grasp_snapshot",
+        attempt_count: int = 1,
+    ) -> np.ndarray:
+        if seed is not None:
+            self.np_random, _ = seeding.np_random(seed)
+        return self._initialize_from_grasp_snapshot(
+            snapshot,
+            reset_source=reset_source,
+            attempt_count=attempt_count,
+        )
+
+    def reset_model(self):
+        snapshot, reset_source, attempt_count = self._sample_grasp_reset_snapshot()
+        return self._initialize_from_grasp_snapshot(
+            snapshot,
+            reset_source=reset_source,
+            attempt_count=attempt_count,
+        )
 
     def step(self, action):
         self.current_step += 1
