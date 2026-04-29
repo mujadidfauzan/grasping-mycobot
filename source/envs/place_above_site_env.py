@@ -12,7 +12,19 @@ from .config_export import capture_init_config, export_env_config
 from .place_target_env import DEFAULT_GRASP_XML_PATH, GRASP_ENV_REGISTRY
 
 DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0}
-DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_lift.xml"
+DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_place.xml"
+TARGET_HEIGHT_ABOVE_PLACE = 0.03
+TARGET_PLACE_YAW_DEG = 30.0
+TARGET_PLACE_YAW_RAD = np.deg2rad(TARGET_PLACE_YAW_DEG)
+GRIPPER_OPEN_DISTANCE_THRESHOLD = 0.008
+GRIPPER_OPEN_ANGLE_DEG = 20.0
+GRIPPER_OPEN_ANGLE_RAD = np.deg2rad(GRIPPER_OPEN_ANGLE_DEG)
+INACTIVE_PLACE_BASE_POS = np.array([10.0, 0.0, 0.0], dtype=np.float64)
+INACTIVE_PLACE_Y_OFFSETS = {
+    "box": 0.00,
+    "triangle": 0.20,
+    "cylinder": -0.20,
+}
 
 
 class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
@@ -32,20 +44,14 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         reward_target_weight: float = 5.0,
         reward_target_tanh_weight: float = 3.0,
+        reward_orientation_weight: float = 2.0,
         reward_target_bonus: float = 15.0,
-        reward_stay_bonus: float = 50.0,
-        reward_drop_penalty: float = 8.0,
         control_penalty_weight: float = 0.001,
         success_distance: float = 0.015,
-        success_steps_required: int = 10,
-        terminate_ee_obj_distance: float = 0.08,
         max_episode_steps: int = 150,
         arm_action_scale: float = 0.01,
         target_x_range: tuple[float, float] = (0.15, 0.27),
-        target_y_range: tuple[float, float] = (-0.25, 0.25),
-        target_z_range: tuple[float, float] = (0.05, 0.07),
-        use_target_place_from_xml: bool = False,
-        target_height_above_place: float = 0.04,
+        target_y_range: tuple[float, float] = (-0.20, 0.20),
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         grasp_model_path: str | None = None,
@@ -60,7 +66,6 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         grasp_ctrl_close_threshold: float = 0.005,
         grasp_transfer_settle_steps: int = 5,
         allow_grasp_fallback_snapshot: bool = True,
-        drop_penalty_min_target_progress: float = 0.03,
         **kwargs,
     ):
         self._init_config = capture_init_config(locals())
@@ -71,20 +76,14 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             default_camera_config,
             reward_target_weight,
             reward_target_tanh_weight,
+            reward_orientation_weight,
             reward_target_bonus,
-            reward_stay_bonus,
-            reward_drop_penalty,
             control_penalty_weight,
             success_distance,
-            success_steps_required,
-            terminate_ee_obj_distance,
             max_episode_steps,
             arm_action_scale,
             target_x_range,
             target_y_range,
-            target_z_range,
-            use_target_place_from_xml,
-            target_height_above_place,
             ee_site_name,
             target_site_name,
             grasp_model_path,
@@ -99,7 +98,6 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             grasp_ctrl_close_threshold,
             grasp_transfer_settle_steps,
             allow_grasp_fallback_snapshot,
-            drop_penalty_min_target_progress,
             **kwargs,
         )
 
@@ -132,36 +130,26 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
 
         self._reward_target_weight = float(reward_target_weight)
         self._reward_target_tanh_weight = float(reward_target_tanh_weight)
+        self._reward_orientation_weight = float(reward_orientation_weight)
         self._reward_target_bonus = float(reward_target_bonus)
-        self._reward_stay_bonus = float(reward_stay_bonus)
-        self._reward_drop_penalty = float(reward_drop_penalty)
         self._control_penalty_weight = float(control_penalty_weight)
         self._success_distance = float(success_distance)
-        self._success_steps_required = int(success_steps_required)
-        self._terminate_ee_obj_distance = float(terminate_ee_obj_distance)
-        if self._terminate_ee_obj_distance <= 0.0:
-            raise ValueError("terminate_ee_obj_distance must be greater than 0.")
+        if self._success_distance <= 0.0:
+            raise ValueError("success_distance must be greater than 0.")
         self.max_episode_steps = int(max_episode_steps)
         self._arm_action_scale = float(arm_action_scale)
         self._target_x_range = tuple(float(value) for value in target_x_range)
         self._target_y_range = tuple(float(value) for value in target_y_range)
-        self._target_z_range = tuple(float(value) for value in target_z_range)
-        self._use_target_place_from_xml = bool(use_target_place_from_xml)
-        self._target_height_above_place = float(target_height_above_place)
-        self._drop_penalty_min_target_progress = float(drop_penalty_min_target_progress)
-        if self._drop_penalty_min_target_progress < 0.0:
-            raise ValueError(
-                "drop_penalty_min_target_progress must be greater than or equal to 0."
-            )
+        self._target_height_above_place = TARGET_HEIGHT_ABOVE_PLACE
+        self._target_place_yaw_rad = TARGET_PLACE_YAW_RAD
         if self._target_x_range[0] > self._target_x_range[1]:
             raise ValueError("target_x_range must be ordered as (min_x, max_x).")
         if self._target_y_range[0] > self._target_y_range[1]:
             raise ValueError("target_y_range must be ordered as (min_y, max_y).")
-        if self._target_z_range[0] > self._target_z_range[1]:
-            raise ValueError("target_z_range must be ordered as (min_z, max_z).")
 
         self.ee_site_name = str(ee_site_name)
         self.target_site_name = str(target_site_name)
+        self._gripper_open_target = np.array([0.01, -0.01], dtype=np.float64)
         self._gripper_closed_target = np.array([-0.02, 0.02], dtype=np.float64)
         self._grasp_model_path = grasp_model_path_obj
         self._grasp_env_name = str(grasp_env_name)
@@ -237,27 +225,36 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             "cylinder": "cyl_place_geom",
         }
         self.place_info = self._build_place_info()
-        if self._use_target_place_from_xml and not self.place_info:
+        if not self.place_info:
             raise ValueError(
-                "PlaceAboveSiteEnv with use_target_place_from_xml=True requires "
-                "place bodies/sites/geoms in the XML scene."
+                "PlaceAboveSiteEnv requires place bodies/sites/geoms in the XML scene."
             )
+        self._default_place_pose_by_object = {
+            obj_name: {
+                "pos": self.model.body_pos[int(info["body_id"])].copy(),
+                "quat": self.model.body_quat[int(info["body_id"])].copy(),
+            }
+            for obj_name, info in self.place_info.items()
+        }
 
         self.active_obj_name = self.object_names[0]
+        self.target_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "target_body"
+        )
         self.target_site_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, self.target_site_name
         )
 
-        self.gripL_jid = mujoco.mj_name2id(
+        gripL_jid = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_JOINT, "Slider_10"
         )
-        self.gripR_jid = mujoco.mj_name2id(
+        gripR_jid = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_JOINT, "Slider_11"
         )
-        self.gripL_qadr = int(self.model.jnt_qposadr[self.gripL_jid])
-        self.gripR_qadr = int(self.model.jnt_qposadr[self.gripR_jid])
-        self.gripL_dadr = int(self.model.jnt_dofadr[self.gripL_jid])
-        self.gripR_dadr = int(self.model.jnt_dofadr[self.gripR_jid])
+        self.gripL_qadr = int(self.model.jnt_qposadr[gripL_jid])
+        self.gripR_qadr = int(self.model.jnt_qposadr[gripR_jid])
+        self.gripL_dadr = int(self.model.jnt_dofadr[gripL_jid])
+        self.gripR_dadr = int(self.model.jnt_dofadr[gripR_jid])
 
         self._ctrl_low = self.model.actuator_ctrlrange[:, 0].copy()
         self._ctrl_high = self.model.actuator_ctrlrange[:, 1].copy()
@@ -278,15 +275,14 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         self.success_counter = 0
         self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self.gripper_state = "closed"
-        self.initial_obj_site_pos = np.zeros(3, dtype=np.float64)
         self.initial_object_target_dist = np.inf
         self.best_object_target_dist = np.inf
         self.sampled_object_yaw = 0.0
         self.applied_object_yaw = 0.0
         self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
-        self._target_place_override_pos: np.ndarray | None = None
-        self._target_place_override_quat: np.ndarray | None = None
+        self.sampled_target_place_pos = np.zeros(3, dtype=np.float64)
 
+        self._sync_target_site_to_active_place()
         closed_ctrl = np.zeros(int(self.model.nu), dtype=np.float64)
         self._set_closed_gripper_target(closed_ctrl)
         self.data.ctrl[:] = np.clip(closed_ctrl, self._ctrl_low, self._ctrl_high)
@@ -342,6 +338,14 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
         return float(np.arctan2(siny_cosp, cosy_cosp))
 
+    @staticmethod
+    def _yaw_to_quat(yaw_rad: float) -> np.ndarray:
+        half_yaw = 0.5 * float(yaw_rad)
+        return np.array(
+            [np.cos(half_yaw), 0.0, 0.0, np.sin(half_yaw)],
+            dtype=np.float64,
+        )
+
     def _get_site_quat(self, site_name: str) -> np.ndarray:
         quat = np.zeros(4, dtype=np.float64)
         mujoco.mju_mat2Quat(quat, self.data.site(site_name).xmat)
@@ -381,26 +385,6 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         )
         rot_error = self._rotation_vector(source_quat, target_quat)
         return pos_error, rot_error
-
-    def _get_required_target_progress(self) -> float:
-        if not np.isfinite(self.initial_object_target_dist):
-            return float(self._drop_penalty_min_target_progress)
-        return float(
-            min(
-                self._drop_penalty_min_target_progress,
-                max(0.0, self.initial_object_target_dist - self._success_distance),
-            )
-        )
-
-    def _get_target_progress(self) -> float:
-        if not (
-            np.isfinite(self.initial_object_target_dist)
-            and np.isfinite(self.best_object_target_dist)
-        ):
-            return 0.0
-        return float(
-            max(0.0, self.initial_object_target_dist - self.best_object_target_dist)
-        )
 
     def _get_active_obj_info(self) -> dict[str, int | str]:
         return self.object_info[self.active_obj_name]
@@ -449,14 +433,12 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         return self._get_site_pose(self.ee_site_name)
 
     def _get_target_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        if self._use_target_place_from_xml:
-            target_pos, target_quat = self._get_site_pose(
-                str(self._get_active_place_info()["site_name"])
-            )
-            target_pos = target_pos.copy()
-            target_pos[2] += self._target_height_above_place
-            return target_pos, target_quat
-        return self._get_site_pose(self.target_site_name)
+        target_pos, target_quat = self._get_site_pose(
+            str(self._get_active_place_info()["site_name"])
+        )
+        target_pos = target_pos.copy()
+        target_pos[2] += self._target_height_above_place
+        return target_pos, target_quat
 
     def _get_active_obj_pose(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_site_pose(str(self._get_active_obj_info()["site_name"]))
@@ -464,6 +446,27 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
     def _set_closed_gripper_target(self, ctrl: np.ndarray) -> None:
         self.gripper_state = "closed"
         ctrl[-2:] = self._gripper_closed_target
+
+    def _set_open_gripper_target(self, ctrl: np.ndarray) -> None:
+        self.gripper_state = "open"
+        ctrl[-2:] = self._gripper_open_target
+
+    def _get_object_target_metrics(self) -> tuple[float, float]:
+        obj_pos, obj_quat = self._get_active_obj_pose()
+        target_pos, target_quat = self._get_target_pose()
+        obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
+            obj_pos, obj_quat, target_pos, target_quat
+        )
+        target_dist = float(np.linalg.norm(obj_target_pos_error))
+        target_angle = float(np.linalg.norm(obj_target_rot_error))
+        return target_dist, target_angle
+
+    def _should_open_gripper(self) -> bool:
+        target_dist, target_angle = self._get_object_target_metrics()
+        return bool(
+            target_dist < GRIPPER_OPEN_DISTANCE_THRESHOLD
+            and target_angle < GRIPPER_OPEN_ANGLE_RAD
+        )
 
     def _coerce_policy_action(self, action: np.ndarray) -> np.ndarray:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
@@ -485,71 +488,51 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             f"or legacy {legacy_shape}, got {action.shape}."
         )
 
-    def _sample_target_site_pose(self) -> np.ndarray:
-        return np.array(
-            [
-                self.np_random.uniform(*self._target_x_range),
-                self.np_random.uniform(*self._target_y_range),
-                self.np_random.uniform(*self._target_z_range),
-            ],
-            dtype=np.float64,
-        )
+    def _restore_default_place_poses(self) -> None:
+        for obj_name, pose in self._default_place_pose_by_object.items():
+            body_id = int(self.place_info[obj_name]["body_id"])
+            self.model.body_pos[body_id] = np.asarray(pose["pos"], dtype=np.float64)
+            self.model.body_quat[body_id] = np.asarray(pose["quat"], dtype=np.float64)
 
-    def _sync_target_site_to_active_place(self) -> None:
-        if not self._use_target_place_from_xml:
-            return
+    def _move_inactive_places_away(self) -> None:
+        for obj_name, place_info in self.place_info.items():
+            if obj_name == self.active_obj_name:
+                continue
 
-        target_pos, _ = self._get_target_pose()
-        self.model.site_pos[self.target_site_id] = target_pos.copy()
-
-    def set_target_place_override(
-        self,
-        target_place_pos: np.ndarray | None,
-        target_place_quat: np.ndarray | None = None,
-    ) -> None:
-        if target_place_pos is None:
-            self._target_place_override_pos = None
-            self._target_place_override_quat = None
-            return
-
-        if not self._use_target_place_from_xml:
-            raise ValueError(
-                "Target place override requires use_target_place_from_xml=True."
-            )
-        if target_place_quat is None:
-            raise ValueError(
-                "target_place_quat must be provided when setting a target override."
+            body_id = int(place_info["body_id"])
+            far_pos = INACTIVE_PLACE_BASE_POS.copy()
+            far_pos[1] = INACTIVE_PLACE_Y_OFFSETS.get(obj_name, 0.0)
+            self.model.body_pos[body_id] = far_pos
+            self.model.body_quat[body_id] = np.asarray(
+                self._default_place_pose_by_object[obj_name]["quat"],
+                dtype=np.float64,
             )
 
-        target_place_pos = np.asarray(target_place_pos, dtype=np.float64).reshape(-1)
-        target_place_quat = np.asarray(target_place_quat, dtype=np.float64).reshape(-1)
-        if target_place_pos.shape != (3,):
-            raise ValueError(
-                "target_place_pos must have shape (3,), "
-                f"got {target_place_pos.shape}."
-            )
-        if target_place_quat.shape != (4,):
-            raise ValueError(
-                "target_place_quat must have shape (4,), "
-                f"got {target_place_quat.shape}."
-            )
-
-        self._target_place_override_pos = target_place_pos.copy()
-        self._target_place_override_quat = self._normalize_quat(target_place_quat)
-
-    def _apply_target_place_override(self) -> None:
-        if not self._use_target_place_from_xml:
-            return
-        if (
-            self._target_place_override_pos is None
-            or self._target_place_override_quat is None
-        ):
-            return
-
+    def _randomize_active_place_pose(self) -> None:
         active_place_info = self._get_active_place_info()
         body_id = int(active_place_info["body_id"])
-        self.model.body_pos[body_id] = self._target_place_override_pos.copy()
-        self.model.body_quat[body_id] = self._target_place_override_quat.copy()
+        place_pos = np.asarray(
+            self._default_place_pose_by_object[self.active_obj_name]["pos"],
+            dtype=np.float64,
+        ).copy()
+        place_pos[0] = self.np_random.uniform(*self._target_x_range)
+        place_pos[1] = self.np_random.uniform(*self._target_y_range)
+        place_quat = self._yaw_to_quat(self._target_place_yaw_rad)
+
+        self.model.body_pos[body_id] = place_pos
+        self.model.body_quat[body_id] = place_quat
+
+    def _sync_target_site_to_active_place(self) -> None:
+        active_place_info = self._get_active_place_info()
+        body_id = int(active_place_info["body_id"])
+        site_id = int(active_place_info["site_id"])
+
+        self.model.body_pos[self.target_body_id] = self.model.body_pos[body_id].copy()
+        self.model.body_quat[self.target_body_id] = self.model.body_quat[body_id].copy()
+
+        target_site_local_pos = self.model.site_pos[site_id].copy()
+        target_site_local_pos[2] += self._target_height_above_place
+        self.model.site_pos[self.target_site_id] = target_site_local_pos
 
     @staticmethod
     def _joint_name_map(model) -> dict[str, int]:
@@ -822,7 +805,9 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         gripper_qpos = qpos[[self.gripL_qadr, self.gripR_qadr]].copy()
         gripper_qvel = qvel[[self.gripL_dadr, self.gripR_dadr]].copy()
         gripper_ctrl = self.data.ctrl[-2:].copy()
-        gripper_closed = np.array([1.0], dtype=np.float64)
+        gripper_closed = np.array(
+            [1.0 if self.gripper_state == "closed" else 0.0], dtype=np.float64
+        )
 
         ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
@@ -872,29 +857,17 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         self.best_object_target_dist = np.inf
 
         snapshot, reset_source, attempt_count = self._sample_grasp_reset_snapshot()
-        self.active_obj_name = str(snapshot["active_object"])
-        if self._use_target_place_from_xml:
-            self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
-        else:
-            self.sampled_target_site_pos = self._sample_target_site_pose()
-            self.model.site_pos[self.target_site_id] = (
-                self.sampled_target_site_pos.copy()
-            )
         self._restore_grasp_snapshot(snapshot)
-        if self._use_target_place_from_xml:
-            self._apply_target_place_override()
-            mujoco.mj_forward(self.model, self.data)
-            self._sync_target_site_to_active_place()
-            mujoco.mj_forward(self.model, self.data)
-            self.sampled_target_site_pos = self.model.site_pos[
-                self.target_site_id
-            ].copy()
-        else:
-            mujoco.mj_forward(self.model, self.data)
+        self._restore_default_place_poses()
+        self._move_inactive_places_away()
+        self._randomize_active_place_pose()
+        self._sync_target_site_to_active_place()
+        mujoco.mj_forward(self.model, self.data)
+        self.sampled_target_site_pos = self.data.site(self.target_site_name).xpos.copy()
+        self.sampled_target_place_pos = self.data.site(
+            str(self._get_active_place_info()["site_name"])
+        ).xpos.copy()
 
-        self.initial_obj_site_pos = np.asarray(
-            snapshot["obj_pos"], dtype=np.float64
-        ).copy()
         self.sampled_object_yaw = float(
             self._quat_to_yaw(np.asarray(snapshot["obj_quat"], dtype=np.float64))
         )
@@ -927,29 +900,18 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
 
         target_ctrl = self.data.ctrl.copy()
         target_ctrl[: self._arm_ctrl_dim] += self._arm_action_scale * action
-        self._set_closed_gripper_target(target_ctrl)
+        if self._should_open_gripper():
+            self._set_open_gripper_target(target_ctrl)
+        else:
+            self._set_closed_gripper_target(target_ctrl)
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
 
         self.do_simulation(target_ctrl, self.frame_skip)
 
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
-        terminated_success = self.success_counter >= self._success_steps_required
-        terminated_ee_obj_far = bool(
-            float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
-            and float(reward_info["object_target_dist"]) > self._success_distance
-        )
-        # if terminated_success:
-        #     print(f"Episode terminated with success at step {self.current_step}.")
-        # elif terminated_ee_obj_far:
-        #     print(
-        #         f"Episode terminated due to object drop at step {self.current_step}.")
         terminated = False
-        if terminated:
-            print("Terminated:", terminated)
         truncated = self.current_step >= self.max_episode_steps
-        # reward_info["terminated_success"] = int(terminated_success)
-        # reward_info["terminated_ee_obj_far"] = int(terminated_ee_obj_far)
 
         if self.render_mode == "human":
             self.render()
@@ -961,9 +923,7 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         target_pos, target_quat = self._get_target_pose()
         ee_pos, ee_quat = self._get_ee_pose()
 
-        ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
-            ee_pos, ee_quat, obj_pos, obj_quat
-        )
+        ee_obj_pos_error, _ = self._get_pose_error(ee_pos, ee_quat, obj_pos, obj_quat)
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos, obj_quat, target_pos, target_quat
         )
@@ -971,99 +931,80 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         target_dist = float(np.linalg.norm(obj_target_pos_error))
         target_angle = float(np.linalg.norm(obj_target_rot_error))
         ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
-        ee_obj_angle = float(np.linalg.norm(ee_obj_rot_error))
 
         self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
-        target_progress = self._get_target_progress()
-        required_target_progress = self._get_required_target_progress()
-        has_approached_target = bool(target_progress >= required_target_progress)
-        terminated_ee_obj_far = bool(
-            ee_obj_dist >= self._terminate_ee_obj_distance
-            and target_dist > self._success_distance
-        )
 
         reward_target = -target_dist * self._reward_target_weight
         reward_target_tanh = (
             1.0 - float(np.tanh(target_dist / 0.05))
         ) * self._reward_target_tanh_weight
+        reward_orientation = -target_angle * self._reward_orientation_weight
         control_penalty = -self._control_penalty_weight * float(
             np.sum(np.square(action))
         )
 
-        target_pose_aligned = bool(target_dist < 0.01)
+        target_pose_aligned = bool(target_dist < self._success_distance)
         reward_target_bonus = self._reward_target_bonus if target_pose_aligned else 0.0
-        drop_penalty = (
-            -self._reward_drop_penalty
-            if terminated_ee_obj_far and not has_approached_target
-            else 0.0
-        )
 
-        stay_bonus = 0.0
         if target_pose_aligned:
             self.success_counter += 1
-            if self.success_counter >= self._success_steps_required:
-                stay_bonus = self._reward_stay_bonus
         else:
             self.success_counter = 0
-            stay_bonus = 0.0
 
         reward = (
             reward_target
             + reward_target_tanh
+            + reward_orientation
             + reward_target_bonus
-            + stay_bonus
-            + drop_penalty
             + control_penalty
         )
 
         reward_info = {
-            # "active_object": self.active_obj_name,
             "ee_object_dist": ee_obj_dist,
-            # "ee_object_rot_error": ee_obj_angle,
             "object_target_dist": target_dist,
-            # "object_target_rot_error": target_angle,
+            "object_target_angle_rad": target_angle,
             "reward_target": float(reward_target),
             "reward_target_tanh": float(reward_target_tanh),
+            "reward_orientation": float(reward_orientation),
             "reward_target_bonus": float(reward_target_bonus),
-            # "target_pose_aligned": int(target_pose_aligned),
-            "stay_bonus": float(stay_bonus),
-            "drop_penalty": float(drop_penalty),
             "control_penalty": float(control_penalty),
-            # "target_progress": float(target_progress),
-            # "required_target_progress": float(required_target_progress),
-            # "has_approached_target": bool(has_approached_target),
         }
 
         return float(reward), reward_info
 
     def export_config(self) -> dict:
         config = export_env_config(self, self._get_obs_components())
-        config["action"]["gripper_policy"] = "fixed_closed"
+        config["action"]["gripper_policy"] = "heuristic_release"
+        config["action"]["gripper_open_distance_threshold"] = float(
+            GRIPPER_OPEN_DISTANCE_THRESHOLD
+        )
+        config["action"]["gripper_open_angle_deg"] = float(GRIPPER_OPEN_ANGLE_DEG)
+        config["action"]["gripper_open_target"] = self._gripper_open_target.astype(
+            np.float64
+        ).tolist()
         config["action"]["gripper_closed_target"] = self._gripper_closed_target.astype(
             np.float64
         ).tolist()
         config["task"]["target_site_name"] = self.target_site_name
+        config["task"][
+            "target_mode"
+        ] = "object_position_above_randomized_xml_target_place"
+        config["task"]["target_visual"] = "xml_target_site_above_place"
+        config["task"]["target_height_above_place"] = float(
+            self._target_height_above_place
+        )
+        config["task"]["target_place_yaw_deg"] = float(TARGET_PLACE_YAW_DEG)
+        config["task"]["target_place_site_names"] = {
+            obj_name: str(info["site_name"])
+            for obj_name, info in self.place_info.items()
+        }
+        config["task"]["target_place_randomization"] = {
+            "target_x_range": list(self._target_x_range),
+            "target_y_range": list(self._target_y_range),
+        }
         config["task"]["success_criterion"] = {
             "object_target_distance_only": float(self._success_distance)
         }
-        if self._use_target_place_from_xml:
-            config["task"]["target_mode"] = "object_position_above_xml_target_place"
-            config["task"]["target_visual"] = "xml_target_site_above_place"
-            config["task"]["target_height_above_place"] = float(
-                self._target_height_above_place
-            )
-            config["task"]["target_place_site_names"] = {
-                obj_name: str(info["site_name"])
-                for obj_name, info in self.place_info.items()
-            }
-        else:
-            config["task"]["target_mode"] = "object_position_to_random_site"
-            config["task"]["target_visual"] = "xml_target_site"
-            config["task"]["target_randomization"] = {
-                "target_x_range": list(self._target_x_range),
-                "target_y_range": list(self._target_y_range),
-                "target_z_range": list(self._target_z_range),
-            }
         config["task"]["grasp_policy_reset"] = {
             "grasp_env_name": self._grasp_env_name,
             "grasp_model_path": str(self._grasp_model_path),
@@ -1082,11 +1023,10 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
         target_pos, target_quat = self._get_target_pose()
         target_place_pos = None
         target_place_quat = None
-        if self._use_target_place_from_xml:
-            active_place_site_name = str(self._get_active_place_info()["site_name"])
-            target_place_pos, target_place_quat = self._get_site_pose(
-                active_place_site_name
-            )
+        active_place_site_name = str(self._get_active_place_info()["site_name"])
+        target_place_pos, target_place_quat = self._get_site_pose(
+            active_place_site_name
+        )
         ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
             ee_pos, ee_quat, obj_pos, obj_quat
         )
@@ -1114,45 +1054,30 @@ class PlaceAboveSiteEnv(MujocoEnv, utils.EzPickle):
             "sampled_object_yaw": float(self.sampled_object_yaw),
             "applied_object_yaw": float(self.applied_object_yaw),
             "sampled_target_site_pos": self.sampled_target_site_pos.copy(),
-            "gripper_policy": "fixed_closed",
+            "sampled_target_place_pos": self.sampled_target_place_pos.copy(),
+            "gripper_policy": "heuristic_release",
             "gripper_state": self.gripper_state,
+            "gripper_should_open": bool(self._should_open_gripper()),
             "success_counter": int(self.success_counter),
             "initial_object_target_dist": float(self.initial_object_target_dist),
             "best_object_target_dist": float(self.best_object_target_dist),
-            "target_progress": float(self._get_target_progress()),
-            "required_target_progress": float(self._get_required_target_progress()),
             "last_action": self.last_action.copy(),
             "grasp_reset_attempts": int(self._last_grasp_reset_attempts),
             "grasp_init_lift_height": float(self._last_grasp_init_lift_height),
             "grasp_init_ee_obj_dist": float(self._last_grasp_init_ee_obj_dist),
             "grasp_reset_source": self._last_grasp_reset_source,
-            "terminate_ee_obj_distance": float(self._terminate_ee_obj_distance),
-            "ee_obj_too_far": bool(
-                np.linalg.norm(ee_obj_pos_error) >= self._terminate_ee_obj_distance
-            ),
-            "use_target_place_from_xml": bool(self._use_target_place_from_xml),
-            "target_place_override_active": bool(
-                self._target_place_override_pos is not None
-            ),
-            "task_mode": (
-                "object_above_xml_target_place"
-                if self._use_target_place_from_xml
-                else "object_above_random_target_site"
-            ),
+            "task_mode": "object_above_randomized_xml_target_place",
         }
         if target_place_pos is not None and target_place_quat is not None:
             state["target_place_pos"] = target_place_pos
             state["target_place_quat"] = target_place_quat
             state["target_place_yaw"] = float(self._quat_to_yaw(target_place_quat))
+            state["target_place_yaw_deg"] = float(TARGET_PLACE_YAW_DEG)
             state["target_height_above_place"] = float(self._target_height_above_place)
-        if (
-            self._target_place_override_pos is not None
-            and self._target_place_override_quat is not None
-        ):
-            state["target_place_override_pos"] = self._target_place_override_pos.copy()
-            state["target_place_override_quat"] = (
-                self._target_place_override_quat.copy()
+            state["gripper_open_distance_threshold"] = float(
+                GRIPPER_OPEN_DISTANCE_THRESHOLD
             )
+            state["gripper_open_angle_deg"] = float(GRIPPER_OPEN_ANGLE_DEG)
         return state
 
     def close(self):

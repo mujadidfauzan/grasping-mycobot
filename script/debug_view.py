@@ -200,10 +200,15 @@ def print_debug_state(env) -> None:
             f"Object pos={format_array(state['obj_pos'])} quat={format_array(state['obj_quat'])} "
             f"rpy_deg={format_array(obj_rpy_deg)}"
         )
+        ee_obj_suffix = ""
+        if "terminate_ee_obj_distance" in state and "ee_obj_too_far" in state:
+            ee_obj_suffix = (
+                f" (limit={state['terminate_ee_obj_distance']:.4f}, "
+                f"too_far={state['ee_obj_too_far']})"
+            )
         print(
             f"EE->Obj pos_err={format_array(state['ee_obj_pos_error'])} "
-            f"dist={state['ee_obj_dist']:.4f} m "
-            f"(limit={state['terminate_ee_obj_distance']:.4f}, too_far={state['ee_obj_too_far']})"
+            f"dist={state['ee_obj_dist']:.4f} m{ee_obj_suffix}"
         )
         print(
             f"EE->Obj rot_err={format_array(state['ee_obj_rot_error'])} "
@@ -378,9 +383,10 @@ def main() -> None:
                 "grasp_success_min_lift": args.grasp_min_lift,
                 "grasp_success_ee_obj_dist": args.grasp_ee_obj_dist,
                 "grasp_success_hold_steps": args.grasp_hold_steps,
-                "terminate_ee_obj_distance": args.terminate_ee_obj_dist,
             }
         )
+        if args.env != "PlaceAboveSiteEnv":
+            env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
@@ -392,13 +398,6 @@ def main() -> None:
                     "place_above_target_height_above_place": args.place_above_target_height,
                 }
             )
-    if args.env == "PlaceAboveSiteEnv":
-        env_kwargs.update(
-            {
-                "use_target_place_from_xml": True,
-                "target_height_above_place": 0.04,
-            }
-        )
     env = env_registry[args.env](xml_file=str(xml_path), render_mode=None, **env_kwargs)
     env.reset(seed=args.seed)
     if hasattr(env, "sync_visual_frames"):

@@ -54,7 +54,7 @@
     <body name="target_body" pos="0. 0. 0.">
       <site
         name="target"
-        pos="0.245 0.10 0.06"
+        pos="0.245 0.10 0.04"
         size=".01 .01 .01"
         rgba="1 0.0 0.0 1"
         type="sphere"
@@ -75,7 +75,7 @@
         name="cube_place_geom"
         type="box"
         pos="0.015 0 0.00"
-        size="0.019 0.019 0.003"
+        size="0.021 0.021 0.003"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -85,8 +85,8 @@
       <geom
         name="cube_place_wall_front"
         type="box"
-        pos="0.015 0.022 0.015"
-        size="0.019 0.003 0.015"
+        pos="0.015 0.024 0.015"
+        size="0.021 0.003 0.015"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -97,8 +97,8 @@
       <geom
         name="cube_place_wall_back"
         type="box"
-        pos="0.015 -0.022 0.015"
-        size="0.019 0.003 0.015"
+        pos="0.015 -0.024 0.015"
+        size="0.021 0.003 0.015"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -109,8 +109,8 @@
       <geom
         name="cube_place_wall_left"
         type="box"
-        pos="-0.007 0 0.015"
-        size="0.003 0.019 0.015"
+        pos="-0.009 0 0.015"
+        size="0.003 0.021 0.015"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -121,8 +121,8 @@
       <geom
         name="cube_place_wall_right"
         type="box"
-        pos="0.037 0 0.015"
-        size="0.003 0.019 0.015"
+        pos="0.039 0 0.015"
+        size="0.003 0.021 0.015"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -152,7 +152,7 @@
         name="tri_place_geom"
         type="box"
         pos="0.015 0 0.00"
-        size="0.017 0.015 0.003"
+        size="0.0185 0.0165 0.003"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
@@ -162,8 +162,8 @@
       <geom
         name="tri_place_wall_base"
         type="box"
-        pos="0.015 -0.023 0.015"
-        size="0.018 0.003 0.015"
+        pos="0.015 -0.025 0.015"
+        size="0.020 0.003 0.015"
         euler="0 0 0"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
@@ -175,8 +175,8 @@
       <geom
         name="tri_place_wall_left"
         type="box"
-        pos="0.000 0.010 0.015"
-        size="0.018 0.003 0.015"
+        pos="-0.0017 0.0111 0.015"
+        size="0.020 0.003 0.015"
         euler="0 0 -2.094395"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
@@ -188,8 +188,8 @@
       <geom
         name="tri_place_wall_right"
         type="box"
-        pos="0.030 0.010 0.015"
-        size="0.018 0.003 0.015"
+        pos="0.0317 0.0111 0.015"
+        size="0.020 0.003 0.015"
         euler="0 0 2.094395"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
@@ -221,21 +221,21 @@
         name="cyl_place_geom"
         type="cylinder"
         pos="0.015 0 0.00"
-        size="0.0165 0.003"
+        size="0.0225 0.003"
         material="place_collision_mat"
         friction="1.2 0.05 0.01"
         condim="4"
         contype="1"
         conaffinity="1"
       />
-      <geom name="cyl_place_wall_0" type="box" pos="0.033 0.000 0.015" size="0.0075 0.0025 0.015" euler="0 0 1.570796" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_1" type="box" pos="0.0277 0.0127 0.015" size="0.0075 0.0025 0.015" euler="0 0 2.356194" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_2" type="box" pos="0.015 0.0180 0.015" size="0.0075 0.0025 0.015" euler="0 0 3.141593" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_3" type="box" pos="0.0023 0.0127 0.015" size="0.0075 0.0025 0.015" euler="0 0 -2.356194" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_4" type="box" pos="-0.003 0.000 0.015" size="0.0075 0.0025 0.015" euler="0 0 -1.570796" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_5" type="box" pos="0.0023 -0.0127 0.015" size="0.0075 0.0025 0.015" euler="0 0 -0.785398" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_6" type="box" pos="0.015 -0.0180 0.015" size="0.0075 0.0025 0.015" euler="0 0 0.000000" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
-      <geom name="cyl_place_wall_7" type="box" pos="0.0277 -0.0127 0.015" size="0.0075 0.0025 0.015" euler="0 0 0.785398" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_0" type="box" pos="0.0375 0.0000 0.015" size="0.0075 0.0025 0.015" euler="0 0 1.570796" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_1" type="box" pos="0.0309 0.0159 0.015" size="0.0075 0.0025 0.015" euler="0 0 2.356194" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_2" type="box" pos="0.0150 0.0225 0.015" size="0.0075 0.0025 0.015" euler="0 0 3.141593" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_3" type="box" pos="-0.0009 0.0159 0.015" size="0.0075 0.0025 0.015" euler="0 0 -2.356194" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_4" type="box" pos="-0.0075 0.0000 0.015" size="0.0075 0.0025 0.015" euler="0 0 -1.570796" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_5" type="box" pos="-0.0009 -0.0159 0.015" size="0.0075 0.0025 0.015" euler="0 0 -0.785398" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_6" type="box" pos="0.0150 -0.0225 0.015" size="0.0075 0.0025 0.015" euler="0 0 0.000000" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
+      <geom name="cyl_place_wall_7" type="box" pos="0.0309 -0.0159 0.015" size="0.0075 0.0025 0.015" euler="0 0 0.785398" material="place_collision_mat" friction="1.2 0.05 0.01" condim="4" contype="1" conaffinity="1"/>
 
       <site
         name="cyl_place_site"

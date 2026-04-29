@@ -48,7 +48,7 @@ DEFAULT_XML_BY_ENV = {
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
     "InsertTargetEnv": OBJECT_PLACE_XML_PATH,
-    "PlaceAboveSiteEnv": OBJECT_LIFT_XML_PATH,
+    "PlaceAboveSiteEnv": OBJECT_PLACE_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
 }
@@ -144,12 +144,6 @@ class DebugVideoOverlayWrapper(Wrapper):
         place_above_reset_source = debug_state.get("place_above_reset_source")
         if isinstance(place_above_reset_source, str):
             lines.append(f"place-above reset: {place_above_reset_source}")
-
-        target_place_override_active = debug_state.get("target_place_override_active")
-        if isinstance(target_place_override_active, (bool, np.bool_)):
-            lines.append(
-                "place override: on" if bool(target_place_override_active) else "place override: off"
-            )
 
         target_too_far = debug_state.get("target_too_far")
         if isinstance(target_too_far, (bool, np.bool_)):
@@ -579,7 +573,7 @@ def parse_args():
     parser.add_argument(
         "--place-above-target-height",
         type=float,
-        default=0.04,
+        default=0.02,
         help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
     return parser.parse_args()
@@ -678,9 +672,10 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "grasp_success_min_lift": args.grasp_min_lift,
                 "grasp_success_ee_obj_dist": args.grasp_ee_obj_dist,
                 "grasp_success_hold_steps": args.grasp_hold_steps,
-                "terminate_ee_obj_distance": args.terminate_ee_obj_dist,
             }
         )
+        if args.env != "PlaceAboveSiteEnv":
+            env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {

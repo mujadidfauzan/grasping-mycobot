@@ -824,8 +824,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._place_above_env = PlaceAboveSiteEnv(
             xml_file=str(self._place_above_xml_path),
             render_mode=None,
-            use_target_place_from_xml=True,
-            target_height_above_place=self._place_above_target_height_above_place,
             grasp_model_path=str(self._grasp_model_path),
             grasp_env_name=self._grasp_env_name,
             grasp_xml_file=str(self._grasp_xml_path),
@@ -838,7 +836,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             grasp_ctrl_close_threshold=self._grasp_ctrl_close_threshold,
             grasp_transfer_settle_steps=self._grasp_transfer_settle_steps,
             allow_grasp_fallback_snapshot=self._allow_grasp_fallback_snapshot,
-            terminate_ee_obj_distance=self._terminate_ee_obj_distance,
         )
         self._place_above_policy = SAC.load(
             str(self._place_above_model_path),
@@ -963,8 +960,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         place_above_policy = self._place_above_policy
         assert place_above_env is not None
         assert place_above_policy is not None
-
-        place_above_env.set_target_place_override(target_place_pos, target_place_quat)
 
         best_snapshot: dict | None = None
         best_score = -np.inf

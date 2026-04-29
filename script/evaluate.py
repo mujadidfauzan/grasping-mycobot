@@ -152,7 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--place-above-target-height",
         type=float,
-        default=0.04,
+        default=0.02,
         help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
     return parser.parse_args()
@@ -498,9 +498,10 @@ def main() -> None:
                 "grasp_success_min_lift": args.grasp_min_lift,
                 "grasp_success_ee_obj_dist": args.grasp_ee_obj_dist,
                 "grasp_success_hold_steps": args.grasp_hold_steps,
-                "terminate_ee_obj_distance": args.terminate_ee_obj_dist,
             }
         )
+        if args.env != "PlaceAboveSiteEnv":
+            env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
@@ -512,13 +513,6 @@ def main() -> None:
                     "place_above_target_height_above_place": args.place_above_target_height,
                 }
             )
-    if args.env == "PlaceAboveSiteEnv":
-        env_kwargs.update(
-            {
-                "use_target_place_from_xml": True,
-                "target_height_above_place": 0.04,
-            }
-        )
     env = env_cls(xml_file=str(xml_path), render_mode=render_mode, **env_kwargs)
     debug_state_getter = getattr(env.unwrapped, "get_debug_state", None)
     if not callable(debug_state_getter):
