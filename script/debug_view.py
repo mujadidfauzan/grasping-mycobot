@@ -11,8 +11,10 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 ENV_NAMES = [
+    "GraspingEnvIK",
     "GraspingEnvV2",
     "InsertTargetEnv",
+    "InsertTargetEnvIK",
     "PlaceAboveSiteEnv",
     "PlaceAboveTargetEnv",
     "PlaceTargetEnv",
@@ -297,6 +299,7 @@ def resolve_frame_option(mujoco, frame_name: str):
 def resolve_default_xml_path(env_name: str) -> Path:
     if env_name in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -324,6 +327,7 @@ def main() -> None:
         args.env
         in {
             "InsertTargetEnv",
+            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -333,9 +337,9 @@ def main() -> None:
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env == "InsertTargetEnv" and not args.place_above_model:
+    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
         raise ValueError(
-            "InsertTargetEnv requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
+            f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
 
     try:
@@ -347,8 +351,10 @@ def main() -> None:
         ) from exc
 
     from source.envs import (
+        GraspingEnvIK,
         GraspingEnvV2,
         InsertTargetEnv,
+        InsertTargetEnvIK,
         PlaceAboveSiteEnv,
         PlaceAboveTargetEnv,
         PlaceTargetEnv,
@@ -356,8 +362,10 @@ def main() -> None:
     )
 
     env_registry = {
+        "GraspingEnvIK": GraspingEnvIK,
         "GraspingEnvV2": GraspingEnvV2,
         "InsertTargetEnv": InsertTargetEnv,
+        "InsertTargetEnvIK": InsertTargetEnvIK,
         "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
         "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
@@ -369,6 +377,7 @@ def main() -> None:
     env_kwargs = {}
     if args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -387,7 +396,7 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env == "InsertTargetEnv":
+        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,

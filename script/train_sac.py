@@ -20,9 +20,11 @@ except ModuleNotFoundError:
 
 from source.envs import (  # GraspingEnvV3,; ReachingEnv,
     GraspingEnv,
+    GraspingEnvIK,
     GraspingEnvV1,
     GraspingEnvV2,
     InsertTargetEnv,
+    InsertTargetEnvIK,
     PlaceAboveSiteEnv,
     PlaceAboveTargetEnv,
     PlaceTargetEnv,
@@ -30,9 +32,11 @@ from source.envs import (  # GraspingEnvV3,; ReachingEnv,
 
 ENV_REGISTRY = {
     "GraspingEnv": GraspingEnv,
+    "GraspingEnvIK": GraspingEnvIK,
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
     "InsertTargetEnv": InsertTargetEnv,
+    "InsertTargetEnvIK": InsertTargetEnvIK,
     "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
     "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
@@ -45,9 +49,11 @@ OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 DEFAULT_XML_BY_ENV = {
     "GraspingEnv": OBJECT_LIFT_XML_PATH,
+    "GraspingEnvIK": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
     "InsertTargetEnv": OBJECT_PLACE_XML_PATH,
+    "InsertTargetEnvIK": OBJECT_PLACE_XML_PATH,
     "PlaceAboveSiteEnv": OBJECT_PLACE_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
@@ -658,6 +664,7 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
     elif args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -676,7 +683,7 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env == "InsertTargetEnv":
+        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,
@@ -809,6 +816,7 @@ def main():
         args.env
         in {
             "InsertTargetEnv",
+            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -818,9 +826,9 @@ def main():
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env == "InsertTargetEnv" and not args.place_above_model:
+    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
         raise ValueError(
-            "InsertTargetEnv requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
+            f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
     xml_path = resolve_xml_path(args.env, args.xml_file)
     args.xml_file = str(xml_path)

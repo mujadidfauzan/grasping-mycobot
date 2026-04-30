@@ -8,6 +8,7 @@ from gymnasium import utils
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
 
+from .cartesian_ik import CartesianIKActionMixin
 from .config_export import capture_init_config, export_env_config
 from .grasping_env import GraspingEnv
 from .grasping_env_ik import GraspingEnvIK
@@ -36,7 +37,7 @@ if GraspingEnvV3 is not None:
     GRASP_ENV_REGISTRY["GraspingEnvV3"] = GraspingEnvV3
 
 
-class InsertTargetEnv(MujocoEnv, utils.EzPickle):
+class InsertTargetEnvIK(CartesianIKActionMixin, MujocoEnv, utils.EzPickle):
     metadata = {
         "render_modes": [
             "human",
@@ -61,7 +62,19 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         success_steps_required: int = 10,
         terminate_ee_obj_distance: float = 0.05,
         max_episode_steps: int = 100,
-        arm_action_scale: float = 0.01,
+        cartesian_action_scale: float = 0.01,
+        cartesian_rotation_scale_deg: float = 10.0,
+        ik_workspace_low: tuple[float, float, float] = (0.10, -0.20, 0.02),
+        ik_workspace_high: tuple[float, float, float] = (0.35, 0.20, 0.30),
+        ik_max_iters: int = 80,
+        ik_position_tolerance: float = 1e-3,
+        ik_rotation_tolerance_deg: float = 3.0,
+        ik_damping: float = 1e-3,
+        ik_step_size: float = 0.75,
+        ik_max_delta_deg: float = 10.0,
+        ik_rotation_weight: float = 0.35,
+        ik_random_restarts: int = 0,
+        ik_seed: int | None = 0,
         gripper_command_threshold: float = -0.01,
         gripper_open_xy_threshold: float = 0.008,
         gripper_open_z_threshold: float = 0.05,
@@ -74,7 +87,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         grasp_model_path: str | None = None,
-        grasp_env_name: str = "GraspingEnvV2",
+        grasp_env_name: str = "GraspingEnvIK",
         grasp_xml_file: str | None = None,
         grasp_max_steps: int = 300,
         grasp_attempts_per_reset: int = 6,
@@ -113,7 +126,19 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             success_steps_required,
             terminate_ee_obj_distance,
             max_episode_steps,
-            arm_action_scale,
+            cartesian_action_scale,
+            cartesian_rotation_scale_deg,
+            ik_workspace_low,
+            ik_workspace_high,
+            ik_max_iters,
+            ik_position_tolerance,
+            ik_rotation_tolerance_deg,
+            ik_damping,
+            ik_step_size,
+            ik_max_delta_deg,
+            ik_rotation_weight,
+            ik_random_restarts,
+            ik_seed,
             gripper_command_threshold,
             gripper_open_xy_threshold,
             gripper_open_z_threshold,
@@ -220,7 +245,6 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         if self._terminate_ee_obj_distance <= 0.0:
             raise ValueError("terminate_ee_obj_distance must be greater than 0.")
         self.max_episode_steps = int(max_episode_steps)
-        self._arm_action_scale = float(arm_action_scale)
         self._gripper_command_threshold = float(gripper_command_threshold)
         self._gripper_open_xy_threshold = float(gripper_open_xy_threshold)
         self._gripper_open_z_threshold = float(gripper_open_z_threshold)
@@ -415,12 +439,22 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
                 "InsertTargetEnv expects arm actuators plus 2 gripper actuators."
             )
         self._arm_ctrl_dim = int(self.model.nu - 2)
-        self._policy_action_dim = self._arm_ctrl_dim
-        self.action_space = Box(
-            low=-1.0,
-            high=1.0,
-            shape=(self._policy_action_dim,),
-            dtype=np.float32,
+        self._setup_cartesian_ik_action(
+            xml_file=str(self.fullpath),
+            ee_site_name=self.ee_site_name,
+            cartesian_action_scale=cartesian_action_scale,
+            cartesian_rotation_scale_deg=cartesian_rotation_scale_deg,
+            ik_workspace_low=ik_workspace_low,
+            ik_workspace_high=ik_workspace_high,
+            ik_max_iters=ik_max_iters,
+            ik_position_tolerance=ik_position_tolerance,
+            ik_rotation_tolerance_deg=ik_rotation_tolerance_deg,
+            ik_damping=ik_damping,
+            ik_step_size=ik_step_size,
+            ik_max_delta_deg=ik_max_delta_deg,
+            ik_rotation_weight=ik_rotation_weight,
+            ik_random_restarts=ik_random_restarts,
+            ik_seed=ik_seed,
         )
 
         self.current_step = 0
@@ -499,7 +533,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     @staticmethod
     def _quat_to_yaw(quat: np.ndarray) -> float:
-        quat = InsertTargetEnv._normalize_quat(quat)
+        quat = InsertTargetEnvIK._normalize_quat(quat)
         w, x, y, z = quat
         siny_cosp = 2.0 * (w * z + x * y)
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
@@ -1088,20 +1122,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
     def step(self, action):
         self.current_step += 1
 
-        action = np.asarray(action, dtype=np.float64).reshape(-1)
-        if action.shape != self.action_space.shape:
-            raise ValueError(
-                "Unexpected action shape for InsertTargetEnv. "
-                f"Expected {self.action_space.shape} (arm only; gripper is heuristic), "
-                f"got {action.shape}."
-            )
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        self.last_action = action.astype(np.float32)
-
-        target_ctrl = self.data.ctrl.copy()
-        target_ctrl[: self._arm_ctrl_dim] += (
-            self._arm_action_scale * action[: self._arm_ctrl_dim]
-        )
+        action, target_ctrl, _ik_result = self._cartesian_action_to_target_ctrl(action)
 
         insertion_metrics = self._get_insertion_metrics()
         pos_error = np.asarray(
@@ -1296,6 +1317,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
         self._last_grasp_init_ee_obj_dist = float(
             snapshot["nested_grasp_init_ee_obj_dist"]
         )
+        self._reset_cartesian_ik_state()
 
         return self._get_obs()
 
@@ -1362,6 +1384,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
 
     def export_config(self) -> dict:
         config = export_env_config(self, self._get_obs_components())
+        self._append_cartesian_ik_config(config)
         config["action"]["gripper_policy"] = "manual_release_heuristic"
         config["action"]["gripper_open_xy_threshold"] = float(
             self._gripper_open_xy_threshold
@@ -1563,6 +1586,7 @@ class InsertTargetEnv(MujocoEnv, utils.EzPickle):
             ),
             "termination_enabled": True,
             "task_mode": "object_insert_into_xml_target_site_synced_to_active_place_site",
+            **self._get_cartesian_ik_debug_state(),
         }
 
     def close(self):

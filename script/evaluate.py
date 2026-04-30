@@ -166,9 +166,11 @@ def resolve_env_names() -> list[str]:
 
     env_names = [
         "GraspingEnv",
+        "GraspingEnvIK",
         "GraspingEnvV1",
         "GraspingEnvV2",
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceAboveTargetEnv",
         "PlaceTargetEnv",
         "ReachingEnv",
@@ -182,6 +184,7 @@ def resolve_env_names() -> list[str]:
 def resolve_default_xml_path(env_name: str) -> Path:
     if env_name in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -426,9 +429,9 @@ def main() -> None:
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env == "InsertTargetEnv" and not args.place_above_model:
+    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
         raise ValueError(
-            "InsertTargetEnv requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
+            f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
 
     try:
@@ -441,10 +444,12 @@ def main() -> None:
     try:
         from source.envs import (
             GraspingEnv,
+            GraspingEnvIK,
             GraspingEnvV1,
             GraspingEnvV2,
             GraspingEnvV3,
             InsertTargetEnv,
+            InsertTargetEnvIK,
             PlaceAboveSiteEnv,
             PlaceAboveTargetEnv,
             PlaceTargetEnv,
@@ -458,9 +463,11 @@ def main() -> None:
 
     env_registry = {
         "GraspingEnv": GraspingEnv,
+        "GraspingEnvIK": GraspingEnvIK,
         "GraspingEnvV1": GraspingEnvV1,
         "GraspingEnvV2": GraspingEnvV2,
         "InsertTargetEnv": InsertTargetEnv,
+        "InsertTargetEnvIK": InsertTargetEnvIK,
         "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
         "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
@@ -484,6 +491,7 @@ def main() -> None:
     env_kwargs = {}
     if args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -502,7 +510,7 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env == "InsertTargetEnv":
+        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,

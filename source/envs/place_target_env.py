@@ -11,6 +11,7 @@ from gymnasium.utils import seeding
 
 from .config_export import capture_init_config, export_env_config
 from .grasping_env import GraspingEnv
+from .grasping_env_ik import GraspingEnvIK
 from .grasping_env_v1 import GraspingEnvV1
 from .grasping_env_v2 import GraspingEnvV2
 
@@ -27,6 +28,7 @@ DEFAULT_GRASP_XML_PATH = (
 
 GRASP_ENV_REGISTRY = {
     "GraspingEnv": GraspingEnv,
+    "GraspingEnvIK": GraspingEnvIK,
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
 }
