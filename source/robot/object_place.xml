@@ -54,7 +54,7 @@
     <body name="target_body" pos="0. 0. 0.">
       <site
         name="target"
-        pos="0.245 0.10 0.04"
+        pos="0.245 0.10 0.02"
         size=".01 .01 .01"
         rgba="1 0.0 0.0 1"
         type="sphere"

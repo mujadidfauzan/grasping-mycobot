@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--place-above-target-height",
         type=float,
-        default=0.04,
+        default=0.02,
         help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
     return parser.parse_args()
