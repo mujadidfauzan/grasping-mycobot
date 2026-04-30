@@ -62,7 +62,7 @@ class InsertTargetEnvIK(CartesianIKActionMixin, MujocoEnv, utils.EzPickle):
         success_steps_required: int = 10,
         terminate_ee_obj_distance: float = 0.05,
         max_episode_steps: int = 100,
-        cartesian_action_scale: float = 0.01,
+        cartesian_action_scale: float = 0.1,
         cartesian_rotation_scale_deg: float = 10.0,
         ik_workspace_low: tuple[float, float, float] = (0.10, -0.20, 0.02),
         ik_workspace_high: tuple[float, float, float] = (0.35, 0.20, 0.30),
@@ -79,8 +79,8 @@ class InsertTargetEnvIK(CartesianIKActionMixin, MujocoEnv, utils.EzPickle):
         gripper_open_xy_threshold: float = 0.008,
         gripper_open_z_threshold: float = 0.05,
         gripper_open_angle_deg: float = 10.0,
-        target_x_range: tuple[float, float] = (0.19, 0.25),
-        target_y_range: tuple[float, float] = (-0.10, 0.10),
+        target_x_range: tuple[float, float] = (0.0, 0.27),
+        target_y_range: tuple[float, float] = (-0.20, 0.20),
         target_place_z: float = 0.025,
         target_z_range: tuple[float, float] | None = None,
         target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
@@ -1137,9 +1137,7 @@ class InsertTargetEnvIK(CartesianIKActionMixin, MujocoEnv, utils.EzPickle):
             and angle_error < self._gripper_open_angle_rad
         )
 
-        self.gripper_release_latched = bool(
-            self.gripper_release_latched or should_open
-        )
+        self.gripper_release_latched = bool(self.gripper_release_latched or should_open)
         self.last_gripper_should_open = should_open
         self.last_gripper_open_xy_error = xy_error.astype(np.float64)
         self.last_gripper_open_z_error = z_error
