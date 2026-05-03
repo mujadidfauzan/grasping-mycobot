@@ -24,7 +24,6 @@ from source.envs import (  # GraspingEnvV3,; ReachingEnv,
     GraspingEnvV1,
     GraspingEnvV2,
     InsertTargetEnv,
-    InsertTargetEnvIK,
     PlaceAboveSiteEnv,
     PlaceAboveTargetEnv,
     PlaceTargetEnv,
@@ -36,7 +35,6 @@ ENV_REGISTRY = {
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
     "InsertTargetEnv": InsertTargetEnv,
-    "InsertTargetEnvIK": InsertTargetEnvIK,
     "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
     "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
@@ -53,7 +51,6 @@ DEFAULT_XML_BY_ENV = {
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
     "InsertTargetEnv": OBJECT_PLACE_XML_PATH,
-    "InsertTargetEnvIK": OBJECT_PLACE_XML_PATH,
     "PlaceAboveSiteEnv": OBJECT_PLACE_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
@@ -78,7 +75,11 @@ INFO_LOG_EXCLUDE_KEYS = {
 class DebugVideoOverlayWrapper(Wrapper):
     def render(self):
         frame = self.env.render()
-        if frame is None or cv2 is None or getattr(self, "render_mode", None) != "rgb_array":
+        if (
+            frame is None
+            or cv2 is None
+            or getattr(self, "render_mode", None) != "rgb_array"
+        ):
             return frame
 
         debug_state_getter = getattr(self.unwrapped, "get_debug_state", None)
@@ -153,7 +154,9 @@ class DebugVideoOverlayWrapper(Wrapper):
 
         target_too_far = debug_state.get("target_too_far")
         if isinstance(target_too_far, (bool, np.bool_)):
-            lines.append("target too far: yes" if bool(target_too_far) else "target too far: no")
+            lines.append(
+                "target too far: yes" if bool(target_too_far) else "target too far: no"
+            )
 
         return lines
 
@@ -664,7 +667,6 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
     elif args.env in {
         "InsertTargetEnv",
-        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
@@ -683,7 +685,7 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
+        if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,
@@ -816,7 +818,6 @@ def main():
         args.env
         in {
             "InsertTargetEnv",
-            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -826,7 +827,7 @@ def main():
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
+    if args.env == "InsertTargetEnv" and not args.place_above_model:
         raise ValueError(
             f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )

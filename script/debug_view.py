@@ -337,7 +337,7 @@ def main() -> None:
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
+    if args.env == "InsertTargetEnv" and not args.place_above_model:
         raise ValueError(
             f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
@@ -396,7 +396,7 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
+        if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,

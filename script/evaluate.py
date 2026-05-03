@@ -390,25 +390,45 @@ class DebugStateCsvWriter:
         self._file = None
         self._writer = None
         self._fieldnames: list[str] | None = None
+        self._rows: list[dict[str, Any]] = []
+
+    def _open_writer(self) -> None:
+        assert self._fieldnames is not None
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.output_path.open("w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
+        self._writer.writeheader()
+
+    def _rewrite_file(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._writer = None
+
+        self._open_writer()
+        assert self._fieldnames is not None
+        assert self._writer is not None
+        for existing_row in self._rows:
+            normalized_row = {key: existing_row.get(key, "") for key in self._fieldnames}
+            self._writer.writerow(normalized_row)
+        self._file.flush()
 
     def write_row(self, row: dict[str, Any]) -> None:
-        if self._writer is None:
-            self.output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = self.output_path.open("w", newline="", encoding="utf-8")
+        if self._fieldnames is None:
             self._fieldnames = list(row.keys())
-            self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
-            self._writer.writeheader()
+            self._open_writer()
 
         assert self._fieldnames is not None
         extra_columns = [key for key in row if key not in self._fieldnames]
         if extra_columns:
-            raise ValueError(
-                "Debug state columns changed during evaluation. "
-                f"Unexpected columns: {extra_columns}"
-            )
+            self._fieldnames.extend(extra_columns)
+            self._rewrite_file()
 
+        self._rows.append(dict(row))
+        assert self._writer is not None
         normalized_row = {key: row.get(key, "") for key in self._fieldnames}
         self._writer.writerow(normalized_row)
+        self._file.flush()
 
     def close(self) -> None:
         if self._file is not None:
@@ -416,6 +436,7 @@ class DebugStateCsvWriter:
             self._file = None
             self._writer = None
             self._fieldnames = None
+            self._rows = []
 
 
 def main() -> None:
@@ -429,7 +450,7 @@ def main() -> None:
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
-    if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"} and not args.place_above_model:
+    if args.env == "InsertTargetEnv" and not args.place_above_model:
         raise ValueError(
             f"{args.env} requires --place-above-model so reset can start from the trained PlaceAboveSite policy state."
         )
@@ -510,7 +531,7 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env in {"InsertTargetEnv", "InsertTargetEnvIK"}:
+        if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
                     "place_above_model_path": args.place_above_model,
