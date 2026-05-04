@@ -27,6 +27,7 @@ from source.envs import (  # GraspingEnvV3,; ReachingEnv,
     PlaceAboveSiteEnv,
     PlaceAboveTargetEnv,
     PlaceTargetEnv,
+    ReachingEnv,
 )
 
 ENV_REGISTRY = {
@@ -38,6 +39,7 @@ ENV_REGISTRY = {
     "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
     "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
+    "ReachingEnv": ReachingEnv,
 }
 
 
@@ -45,6 +47,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
+REACHING_XML_PATH = PROJECT_ROOT / "source" / "robot" / "reaching.xml"
 DEFAULT_XML_BY_ENV = {
     "GraspingEnv": OBJECT_LIFT_XML_PATH,
     "GraspingEnvIK": OBJECT_LIFT_XML_PATH,
@@ -54,6 +57,7 @@ DEFAULT_XML_BY_ENV = {
     "PlaceAboveSiteEnv": OBJECT_PLACE_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
+    "ReachingEnv": REACHING_XML_PATH,
 }
 
 
@@ -135,6 +139,8 @@ class DebugVideoOverlayWrapper(Wrapper):
         target_dist = _coerce_scalar_metric(debug_state.get("obj_target_dist"))
         if target_dist is None:
             target_dist = _coerce_scalar_metric(debug_state.get("object_target_dist"))
+        if target_dist is None:
+            target_dist = _coerce_scalar_metric(debug_state.get("ee_target_dist"))
         if target_dist is not None:
             lines.append(f"target dist: {target_dist:.3f} m")
 

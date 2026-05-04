@@ -12,6 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
+REACHING_XML_PATH = PROJECT_ROOT / "source" / "robot" / "reaching.xml"
 DEFAULT_EVAL_LOG_DIR = PROJECT_ROOT / "logs_eval"
 
 
@@ -159,10 +160,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_env_names() -> list[str]:
-    try:
-        from source.envs import GraspingEnvV3
-    except ModuleNotFoundError:
-        GraspingEnvV3 = None
 
     env_names = [
         "GraspingEnv",
@@ -176,12 +173,12 @@ def resolve_env_names() -> list[str]:
         "ReachingEnv",
         "PlaceAboveSiteEnv",
     ]
-    if GraspingEnvV3 is not None:
-        env_names.append("GraspingEnvV3")
     return sorted(env_names)
 
 
 def resolve_default_xml_path(env_name: str) -> Path:
+    if env_name == "ReachingEnv":
+        return REACHING_XML_PATH
     if env_name in {
         "InsertTargetEnv",
         "InsertTargetEnvIK",
@@ -409,7 +406,9 @@ class DebugStateCsvWriter:
         assert self._fieldnames is not None
         assert self._writer is not None
         for existing_row in self._rows:
-            normalized_row = {key: existing_row.get(key, "") for key in self._fieldnames}
+            normalized_row = {
+                key: existing_row.get(key, "") for key in self._fieldnames
+            }
             self._writer.writerow(normalized_row)
         self._file.flush()
 
@@ -441,12 +440,16 @@ class DebugStateCsvWriter:
 
 def main() -> None:
     args = parse_args()
-    if args.env in {
-        "InsertTargetEnv",
-        "PlaceTargetEnv",
-        "PlaceAboveTargetEnv",
-        "PlaceAboveSiteEnv",
-    } and not args.grasp_model:
+    if (
+        args.env
+        in {
+            "InsertTargetEnv",
+            "PlaceTargetEnv",
+            "PlaceAboveTargetEnv",
+            "PlaceAboveSiteEnv",
+        }
+        and not args.grasp_model
+    ):
         raise ValueError(
             f"{args.env} requires --grasp-model so reset can start from the trained grasping policy state."
         )
@@ -468,7 +471,6 @@ def main() -> None:
             GraspingEnvIK,
             GraspingEnvV1,
             GraspingEnvV2,
-            GraspingEnvV3,
             InsertTargetEnv,
             InsertTargetEnvIK,
             PlaceAboveSiteEnv,
@@ -494,8 +496,6 @@ def main() -> None:
         "PlaceTargetEnv": PlaceTargetEnv,
         "ReachingEnv": ReachingEnv,
     }
-    if GraspingEnvV3 is not None:
-        env_registry["GraspingEnvV3"] = GraspingEnvV3
 
     xml_path = resolve_xml_path(args.env, args.xml_file)
 

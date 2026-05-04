@@ -10,6 +10,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
+REACHING_XML_PATH = PROJECT_ROOT / "source" / "robot" / "reaching.xml"
 ENV_NAMES = [
     "GraspingEnvIK",
     "GraspingEnvV2",
@@ -297,6 +298,8 @@ def resolve_frame_option(mujoco, frame_name: str):
 
 
 def resolve_default_xml_path(env_name: str) -> Path:
+    if env_name == "ReachingEnv":
+        return REACHING_XML_PATH
     if env_name in {
         "InsertTargetEnv",
         "InsertTargetEnvIK",

@@ -6,6 +6,7 @@ from .insert_target_env import InsertTargetEnv
 from .place_above_site_env import PlaceAboveSiteEnv
 from .place_above_target_env import PlaceAboveTargetEnv
 from .place_target_env import PlaceTargetEnv
+from .reaching_env import ReachingEnv, ReachingEnvIK
 
 __all__ = [
     "GraspingEnv",
@@ -13,10 +14,9 @@ __all__ = [
     "GraspingEnvV1",
     "GraspingEnvV2",
     "InsertTargetEnv",
-    "InsertTargetEnvIK",
     "PlaceAboveSiteEnv",
     "PlaceAboveTargetEnv",
     "PlaceTargetEnv",
     "ReachingEnv",
-    "GraspingEnvV3",
+    "ReachingEnvIK",
 ]
