@@ -36,6 +36,27 @@
       <body name="target_body" pos="0. 0. 0.">
         <site name="target" pos="0.3 0.0 0.2" size=".01 .01 .01" rgba="1 0.0 0.0 1" type="sphere"/>
       </body>
+
+      <body name="ee_frame_vis" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="ee_frame_origin" type="sphere" size="0.004" rgba="1 1 1 0.95" contype="0" conaffinity="0"/>
+        <geom name="ee_frame_x" type="capsule" fromto="0 0 0 0.05 0 0" size="0.0018" rgba="1 0.15 0.15 0.95" contype="0" conaffinity="0"/>
+        <geom name="ee_frame_y" type="capsule" fromto="0 0 0 0 0.05 0" size="0.0018" rgba="0.15 1 0.15 0.95" contype="0" conaffinity="0"/>
+        <geom name="ee_frame_z" type="capsule" fromto="0 0 0 0 0 0.05" size="0.0018" rgba="0.2 0.4 1 0.95" contype="0" conaffinity="0"/>
+      </body>
+
+      <body name="object_frame_vis" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="object_frame_origin" type="sphere" size="0.0045" rgba="1 1 1 0.95" contype="0" conaffinity="0"/>
+        <geom name="object_frame_x" type="capsule" fromto="0 0 0 0.045 0 0" size="0.0015" rgba="1 0.35 0.35 0.85" contype="0" conaffinity="0"/>
+        <geom name="object_frame_y" type="capsule" fromto="0 0 0 0 0.045 0" size="0.0015" rgba="0.35 1 0.35 0.85" contype="0" conaffinity="0"/>
+        <geom name="object_frame_z" type="capsule" fromto="0 0 0 0 0 0.045" size="0.0015" rgba="0.35 0.55 1 0.85" contype="0" conaffinity="0"/>
+      </body>
+
+      <body name="target_frame_vis" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="target_frame_origin" type="sphere" size="0.005" rgba="1 0.9 0.1 0.95" contype="0" conaffinity="0"/>
+        <geom name="target_frame_x" type="capsule" fromto="0 0 0 0.06 0 0" size="0.0014" rgba="1 0.45 0.45 0.7" contype="0" conaffinity="0"/>
+        <geom name="target_frame_y" type="capsule" fromto="0 0 0 0 0.06 0" size="0.0014" rgba="0.45 1 0.45 0.7" contype="0" conaffinity="0"/>
+        <geom name="target_frame_z" type="capsule" fromto="0 0 0 0 0 0.06" size="0.0014" rgba="0.45 0.6 1 0.7" contype="0" conaffinity="0"/>
+      </body>
   
       <!-- BOX -->
       <body name="obj_box" pos="0.20 0.00 0.025">
@@ -69,8 +90,7 @@
               material="cylinder_material"/>
         <site name="obj_cylinder_ref" pos="0 0 0.015" size="0.01 0.01 0.01" rgba="0.5 0.5 1 1" type="sphere"/>
       </body>
-  
+
     </worldbody>
-    
+
   </mujoco>
-  
