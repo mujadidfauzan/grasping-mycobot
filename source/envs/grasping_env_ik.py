@@ -52,8 +52,8 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         ee_obj_tanh_scale: float = 0.05,
         obj_target_tanh_scale: float = 0.05,
         success_distance: float = 0.01,
-        success_angle_deg: float = 25.0,
-        success_requires_orientation: bool = False,
+        success_angle_deg: float = 10.0,
+        success_requires_orientation: bool = True,
         success_steps_required: int = 10,
         max_episode_steps: int = 70,
         cartesian_action_scale: float = 0.05,
@@ -558,10 +558,10 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
           uses the current EE pose as the base.
         """
         action = np.asarray(action, dtype=np.float64).reshape(-1)
-        # print(f"Raw action: {action}")
+        print(f"Raw action: {action}")
         delta_pos = self._cartesian_action_scale * action[:3]
         delta_rpy = self._cartesian_rotation_scale_rad * action[3:6]
-        # print(f"Delta pos: {delta_pos}, Delta RPY: {delta_rpy}")
+        print(f"Delta pos: {delta_pos}, Delta RPY: {delta_rpy}")
 
         if self._smooth_cartesian_target:
             base_pos = self._ik_target_pos.copy()
@@ -829,7 +829,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             + reward_target_bonus
             + control_penalty
         )
-        # print(f"Reward total: {reward:.3f}")
+        print(f"Reward total: {reward:.3f}")
 
         reward_info = {
             "active_object": self.active_obj_name,
@@ -1156,9 +1156,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
                 0.0 if not np.isfinite(self.last_grasp_dist) else self.last_grasp_dist
             ),
             "last_grasp_angle_rad": float(
-                0.0
-                if not np.isfinite(self.last_grasp_angle)
-                else self.last_grasp_angle
+                0.0 if not np.isfinite(self.last_grasp_angle) else self.last_grasp_angle
             ),
             "grasp_latched": bool(self.grasp_latched),
             "gripper_state": self.gripper_state,

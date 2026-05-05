@@ -43,17 +43,17 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         reward_distance_weight: float = 5.0,
         reward_distance_tanh_weight: float = 2.0,
-        reward_orientation_weight: float = 0.25,
-        reward_target_bonus: float = 8.0,
+        reward_orientation_weight: float = 2.0,
+        reward_target_bonus: float = 20.0,
         control_penalty_weight: float = 0.001,
         distance_tanh_scale: float = 0.05,
         success_distance: float = 0.01,
-        success_angle_deg: float = 25.0,
-        success_requires_orientation: bool = False,
+        success_angle_deg: float = 10.0,
+        success_requires_orientation: bool = True,
         success_steps_required: int = 5,
-        max_episode_steps: int = 100,
-        cartesian_action_scale: float = 0.05,
-        cartesian_rotation_scale_deg: float = 5.0,
+        max_episode_steps: int = 200,
+        cartesian_action_scale: float = 0.01,
+        cartesian_rotation_scale_deg: float = 10.0,
         ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.015),
         ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.30),
         ik_position_only: bool = False,
@@ -70,10 +70,10 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         max_joint_ctrl_delta_deg: float = 5.0,
         smooth_cartesian_target: bool = True,
         debug_ik: bool = False,
-        target_x_range: tuple[float, float] = (0.16, 0.30),
+        target_x_range: tuple[float, float] = (0.10, 0.27),
         target_y_range: tuple[float, float] = (-0.14, 0.14),
         target_z: float = 0.015,
-        target_yaw_range: tuple[float, float] = (-np.pi, np.pi),
+        target_yaw_range: tuple[float, float] = (-np.pi / 2, np.pi / 2),
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         target_body_name: str = "target_body",
@@ -334,7 +334,9 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
             ik_workspace_high, dtype=np.float64
         ).reshape(3)
         if np.any(self._ik_workspace_low > self._ik_workspace_high):
-            raise ValueError("ik_workspace_low must be ordered below ik_workspace_high.")
+            raise ValueError(
+                "ik_workspace_low must be ordered below ik_workspace_high."
+            )
 
         self._ik_position_only = bool(ik_position_only)
         self._ik_max_iters = int(ik_max_iters)
@@ -468,6 +470,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         delta_pos = self._cartesian_action_scale * action[:3]
         delta_rpy = self._cartesian_rotation_scale_rad * action[3:6]
+        # print(f"Action: {action}, Delta Pos: {delta_pos}, Delta RPY: {delta_rpy}")
 
         if self._smooth_cartesian_target:
             base_pos = self._ik_target_pos.copy()
@@ -482,6 +485,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
             self._ik_workspace_low,
             self._ik_workspace_high,
         )
+        print(f"Target EE: {target_pos}")
 
         base_rpy = _quat_to_euler_xyz(base_quat)
         target_rpy = self._wrap_vector_to_pi(base_rpy + delta_rpy)
@@ -588,6 +592,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
 
     def step(self, action):
         self.current_step += 1
+        print(f"Step {self.current_step}")
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
 
         start_ctrl = self.data.ctrl.copy()
@@ -626,6 +631,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         )
 
         ee_target_dist = float(np.linalg.norm(ee_target_pos_error))
+        print(f"EE-Target Distance: {ee_target_dist}")
         ee_target_angle = float(np.linalg.norm(ee_target_rot_error))
         reward_distance = -ee_target_dist * self._reward_distance_weight
         reward_distance_tanh = (
@@ -705,7 +711,9 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         qpos = self.data.qpos
         qvel = self.data.qvel
         ee_pos, ee_quat = self._get_ee_pose()
+        print(f"EE Pos: {ee_pos}, EE Quat: {ee_quat}")
         target_pos, target_quat = self._get_target_pose()
+        print(f"Target Pos: {target_pos}, Target Quat: {target_quat}")
         ee_target_pos_error, ee_target_rot_error = self._get_pose_error(
             ee_pos,
             ee_quat,
