@@ -55,7 +55,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         cartesian_action_scale: float = 0.01,
         cartesian_rotation_scale_deg: float = 10.0,
         ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.015),
-        ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.30),
+        ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.45),
         ik_position_only: bool = False,
         ik_max_iters: int = 80,
         ik_position_tolerance: float = 1e-3,
