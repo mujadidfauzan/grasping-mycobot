@@ -108,6 +108,18 @@ def parse_args() -> argparse.Namespace:
         help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
     )
     parser.add_argument(
+        "--grasp-max-lift",
+        type=float,
+        default=0.02,
+        help="For InsertTargetEnvIK: maximum object lift height allowed when accepting the closed-gripper reset snapshot.",
+    )
+    parser.add_argument(
+        "--grasp-qpos-close-threshold",
+        type=float,
+        default=0.002,
+        help="For InsertTargetEnvIK: minimum actual finger joint displacement required before reset accepts the gripper as physically closed.",
+    )
+    parser.add_argument(
         "--grasp-ee-obj-dist",
         type=float,
         default=0.035,
@@ -228,12 +240,18 @@ def print_debug_state(env) -> None:
         print(
             f"Yaw sampled={np.rad2deg(state['sampled_object_yaw']):.2f} deg "
             f"applied={np.rad2deg(state['applied_object_yaw']):.2f} deg "
-            f"current={np.rad2deg(state['object_yaw']):.2f} deg"
+            # f"current={np.rad2deg(state['object_yaw']):.2f} deg"
         )
         # print(
         #     f"Gripper assist_mix={state['gripper_assist_mix']:.3f} "
         #     f"should_close={state['gripper_should_close']}"
         # )
+        if "gripper_qpos" in state:
+            print(
+                f"Gripper qpos={format_array(state['gripper_qpos'])} "
+                f"ctrl={format_array(state.get('gripper_ctrl', np.array([])))} "
+                f"state={state.get('gripper_state', 'n/a')}"
+            )
         if "target_place_pos" in state:
             sampled_target_place_pos = state.get("sampled_target_place_pos")
             if sampled_target_place_pos is not None:
@@ -385,10 +403,14 @@ def main() -> None:
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
+        grasp_env_name = args.grasp_env
+        if args.env == "InsertTargetEnvIK" and grasp_env_name == "GraspingEnvV2":
+            grasp_env_name = "GraspingEnvIK"
+
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
-                "grasp_env_name": args.grasp_env,
+                "grasp_env_name": grasp_env_name,
                 "grasp_xml_file": args.grasp_xml_file,
                 "grasp_max_steps": args.grasp_max_steps,
                 "grasp_attempts_per_reset": args.grasp_attempts,
@@ -399,6 +421,11 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
+        if args.env == "InsertTargetEnvIK":
+            env_kwargs["grasp_success_max_lift"] = args.grasp_max_lift
+            env_kwargs["grasp_qpos_close_threshold"] = (
+                args.grasp_qpos_close_threshold
+            )
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {

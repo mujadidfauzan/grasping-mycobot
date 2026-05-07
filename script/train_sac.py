@@ -24,6 +24,7 @@ from source.envs import (  # GraspingEnvV3,; ReachingEnv,
     GraspingEnvV1,
     GraspingEnvV2,
     InsertTargetEnv,
+    InsertTargetEnvIK,
     PlaceAboveSiteEnv,
     PlaceAboveTargetEnv,
     PlaceTargetEnv,
@@ -36,6 +37,7 @@ ENV_REGISTRY = {
     "GraspingEnvV1": GraspingEnvV1,
     "GraspingEnvV2": GraspingEnvV2,
     "InsertTargetEnv": InsertTargetEnv,
+    "InsertTargetEnvIK": InsertTargetEnvIK,
     "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
     "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
     "PlaceTargetEnv": PlaceTargetEnv,
@@ -54,6 +56,7 @@ DEFAULT_XML_BY_ENV = {
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV2": OBJECT_LIFT_XML_PATH,
     "InsertTargetEnv": OBJECT_PLACE_XML_PATH,
+    "InsertTargetEnvIK": OBJECT_PLACE_XML_PATH,
     "PlaceAboveSiteEnv": OBJECT_PLACE_XML_PATH,
     "PlaceAboveTargetEnv": OBJECT_PLACE_XML_PATH,
     "PlaceTargetEnv": OBJECT_PLACE_XML_PATH,
@@ -136,7 +139,7 @@ class DebugVideoOverlayWrapper(Wrapper):
         if sampled_insert_place_pos is not None:
             lines.append(f"sampled place xyz: {sampled_insert_place_pos}")
 
-        target_dist = _coerce_scalar_metric(debug_state.get("obj_target_dist"))
+        target_dist = _coerce_scalar_metric(debug_state.get("ee_target_dist"))
         if target_dist is None:
             target_dist = _coerce_scalar_metric(debug_state.get("object_target_dist"))
         if target_dist is None:
@@ -461,7 +464,7 @@ def parse_args():
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=1_000_000,
+        default=100_000_000,
         help="Additional timesteps to train.",
     )
     parser.add_argument(
@@ -538,6 +541,18 @@ def parse_args():
         type=float,
         default=0.025,
         help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
+    )
+    parser.add_argument(
+        "--grasp-max-lift",
+        type=float,
+        default=0.02,
+        help="For InsertTargetEnvIK: maximum object lift height allowed when accepting the closed-gripper reset snapshot.",
+    )
+    parser.add_argument(
+        "--grasp-qpos-close-threshold",
+        type=float,
+        default=0.002,
+        help="For InsertTargetEnvIK: minimum actual finger joint displacement required before reset accepts the gripper as physically closed.",
     )
     parser.add_argument(
         "--grasp-ee-obj-dist",
@@ -673,14 +688,19 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
     elif args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
+        grasp_env_name = args.grasp_env
+        if args.env == "InsertTargetEnvIK" and grasp_env_name == "GraspingEnvV2":
+            grasp_env_name = "GraspingEnvIK"
+
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
-                "grasp_env_name": args.grasp_env,
+                "grasp_env_name": grasp_env_name,
                 "grasp_xml_file": args.grasp_xml_file,
                 "grasp_max_steps": args.grasp_max_steps,
                 "grasp_attempts_per_reset": args.grasp_attempts,
@@ -691,6 +711,11 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
+        if args.env == "InsertTargetEnvIK":
+            env_kwargs["grasp_success_max_lift"] = args.grasp_max_lift
+            env_kwargs["grasp_qpos_close_threshold"] = (
+                args.grasp_qpos_close_threshold
+            )
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {

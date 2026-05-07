@@ -3,6 +3,7 @@ from .grasping_env_ik import GraspingEnvIK
 from .grasping_env_v1 import GraspingEnvV1
 from .grasping_env_v2 import GraspingEnvV2
 from .insert_target_env import InsertTargetEnv
+from .insert_target_env_ik import InsertTargetEnvIK
 from .place_above_site_env import PlaceAboveSiteEnv
 from .place_above_target_env import PlaceAboveTargetEnv
 from .place_target_env import PlaceTargetEnv
@@ -14,6 +15,7 @@ __all__ = [
     "GraspingEnvV1",
     "GraspingEnvV2",
     "InsertTargetEnv",
+    "InsertTargetEnvIK",
     "PlaceAboveSiteEnv",
     "PlaceAboveTargetEnv",
     "PlaceTargetEnv",

@@ -485,7 +485,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
             self._ik_workspace_low,
             self._ik_workspace_high,
         )
-        print(f"Target EE: {target_pos}")
+        # print(f"Target EE: {target_pos}")
 
         base_rpy = _quat_to_euler_xyz(base_quat)
         target_rpy = self._wrap_vector_to_pi(base_rpy + delta_rpy)
@@ -592,7 +592,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
 
     def step(self, action):
         self.current_step += 1
-        print(f"Step {self.current_step}")
+        # print(f"Step {self.current_step}")
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
 
         start_ctrl = self.data.ctrl.copy()
@@ -631,7 +631,7 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         )
 
         ee_target_dist = float(np.linalg.norm(ee_target_pos_error))
-        print(f"EE-Target Distance: {ee_target_dist}")
+        # print(f"EE-Target Distance: {ee_target_dist}")
         ee_target_angle = float(np.linalg.norm(ee_target_rot_error))
         reward_distance = -ee_target_dist * self._reward_distance_weight
         reward_distance_tanh = (
@@ -711,9 +711,9 @@ class ReachingEnvIK(MujocoEnv, utils.EzPickle):
         qpos = self.data.qpos
         qvel = self.data.qvel
         ee_pos, ee_quat = self._get_ee_pose()
-        print(f"EE Pos: {ee_pos}, EE Quat: {ee_quat}")
+        # print(f"EE Pos: {ee_pos}, EE Quat: {ee_quat}")
         target_pos, target_quat = self._get_target_pose()
-        print(f"Target Pos: {target_pos}, Target Quat: {target_quat}")
+        # print(f"Target Pos: {target_pos}, Target Quat: {target_quat}")
         ee_target_pos_error, ee_target_rot_error = self._get_pose_error(
             ee_pos,
             ee_quat,

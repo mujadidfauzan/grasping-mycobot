@@ -41,25 +41,21 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         xml_file: str = str(DEFAULT_XML_PATH),
         frame_skip: int = 1,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
-        reward_ee_obj_dist_weight: float = 3.0,
-        reward_ee_obj_dist_tanh_weight: float = 1.5,
-        reward_ee_obj_orient_weight: float = 1.0,
-        reward_obj_target_dist_weight: float = 5.0,
-        reward_obj_target_dist_tanh_weight: float = 3.0,
-        reward_obj_target_orient_weight: float = 1.0,
+        reward_distance_weight: float = 5.0,
+        reward_distance_tanh_weight: float = 2.0,
+        reward_orientation_weight: float = 2.0,
         reward_target_bonus: float = 20.0,
         control_penalty_weight: float = 0.001,
-        ee_obj_tanh_scale: float = 0.05,
-        obj_target_tanh_scale: float = 0.05,
+        distance_tanh_scale: float = 0.05,
         success_distance: float = 0.01,
         success_angle_deg: float = 10.0,
         success_requires_orientation: bool = True,
-        success_steps_required: int = 10,
+        success_steps_required: int = 5,
         max_episode_steps: int = 200,
         cartesian_action_scale: float = 0.01,
-        cartesian_rotation_scale_deg: float = 5.0,
-        ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.010),
-        ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.30),
+        cartesian_rotation_scale_deg: float = 10.0,
+        ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.00),
+        ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.45),
         ik_position_only: bool = False,
         ik_max_iters: int = 80,
         ik_position_tolerance: float = 1e-3,
@@ -74,15 +70,14 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         max_joint_ctrl_delta_deg: float = 5.0,
         smooth_cartesian_target: bool = True,
         debug_ik: bool = False,
-        object_x_range: tuple[float, float] = (0.10, 0.27),
-        object_y_range: tuple[float, float] = (-0.20, 0.20),
+        object_x_range: tuple[float, float] = (0.15, 0.27),
+        object_y_range: tuple[float, float] = (-0.14, 0.14),
         object_z: float = 0.025,
-        object_yaw_limit_rad: float = 1.05,
-        lift_height: float = 0.10,
+        object_yaw_range: tuple[float, float] = (-np.pi / 4, np.pi / 4),
+        lift_height: float = 0.08,
         grasp_close_distance: float = 0.015,
         grasp_release_distance: float = 0.055,
         grasp_close_angle_deg: float = 25.0,
-        reward_grasp_bonus: float = 10.0,
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         ee_frame_body_name: str = "ee_frame_vis",
@@ -96,16 +91,12 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             xml_file,
             frame_skip,
             default_camera_config,
-            reward_ee_obj_dist_weight,
-            reward_ee_obj_dist_tanh_weight,
-            reward_ee_obj_orient_weight,
-            reward_obj_target_dist_weight,
-            reward_obj_target_dist_tanh_weight,
-            reward_obj_target_orient_weight,
+            reward_distance_weight,
+            reward_distance_tanh_weight,
+            reward_orientation_weight,
             reward_target_bonus,
             control_penalty_weight,
-            ee_obj_tanh_scale,
-            obj_target_tanh_scale,
+            distance_tanh_scale,
             success_distance,
             success_angle_deg,
             success_requires_orientation,
@@ -132,12 +123,11 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             object_x_range,
             object_y_range,
             object_z,
-            object_yaw_limit_rad,
+            object_yaw_range,
             lift_height,
             grasp_close_distance,
             grasp_release_distance,
             grasp_close_angle_deg,
-            reward_grasp_bonus,
             ee_site_name,
             target_site_name,
             ee_frame_body_name,
@@ -146,18 +136,12 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             **kwargs,
         )
 
-        self._reward_ee_obj_dist_weight = float(reward_ee_obj_dist_weight)
-        self._reward_ee_obj_dist_tanh_weight = float(reward_ee_obj_dist_tanh_weight)
-        self._reward_ee_obj_orient_weight = float(reward_ee_obj_orient_weight)
-        self._reward_obj_target_dist_weight = float(reward_obj_target_dist_weight)
-        self._reward_obj_target_dist_tanh_weight = float(
-            reward_obj_target_dist_tanh_weight
-        )
-        self._reward_obj_target_orient_weight = float(reward_obj_target_orient_weight)
+        self._reward_distance_weight = float(reward_distance_weight)
+        self._reward_distance_tanh_weight = float(reward_distance_tanh_weight)
+        self._reward_orientation_weight = float(reward_orientation_weight)
         self._reward_target_bonus = float(reward_target_bonus)
         self._control_penalty_weight = float(control_penalty_weight)
-        self._ee_obj_tanh_scale = float(ee_obj_tanh_scale)
-        self._obj_target_tanh_scale = float(obj_target_tanh_scale)
+        self._distance_tanh_scale = float(distance_tanh_scale)
         self._success_distance = float(success_distance)
         self._success_angle_rad = np.deg2rad(float(success_angle_deg))
         self._success_requires_orientation = bool(success_requires_orientation)
@@ -166,12 +150,11 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         self._object_x_range = tuple(float(value) for value in object_x_range)
         self._object_y_range = tuple(float(value) for value in object_y_range)
         self._object_z = float(object_z)
-        self._object_yaw_limit_rad = float(object_yaw_limit_rad)
+        self._object_yaw_range = tuple(float(value) for value in object_yaw_range)
         self._lift_height = float(lift_height)
         self._grasp_close_distance = float(grasp_close_distance)
         self._grasp_release_distance = float(grasp_release_distance)
         self._grasp_close_angle_rad = np.deg2rad(float(grasp_close_angle_deg))
-        self._reward_grasp_bonus = float(reward_grasp_bonus)
         self.ee_site_name = str(ee_site_name)
         self.target_site_name = str(target_site_name)
         self.ee_frame_body_name = str(ee_frame_body_name)
@@ -182,10 +165,8 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         self._smooth_cartesian_target = bool(smooth_cartesian_target)
         self._debug_ik = bool(debug_ik)
 
-        if self._ee_obj_tanh_scale <= 0.0:
-            raise ValueError("ee_obj_tanh_scale must be greater than 0.")
-        if self._obj_target_tanh_scale <= 0.0:
-            raise ValueError("obj_target_tanh_scale must be greater than 0.")
+        if self._distance_tanh_scale <= 0.0:
+            raise ValueError("distance_tanh_scale must be greater than 0.")
         if self._success_distance <= 0.0:
             raise ValueError("success_distance must be greater than 0.")
         if self._success_angle_rad <= 0.0:
@@ -196,6 +177,8 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             raise ValueError("max_episode_steps must be greater than 0.")
         if self._control_interpolation_steps <= 0:
             raise ValueError("control_interpolation_steps must be greater than 0.")
+        if self._lift_height <= 0.0:
+            raise ValueError("lift_height must be greater than 0.")
 
         MujocoEnv.__init__(
             self,
@@ -558,10 +541,10 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
           uses the current EE pose as the base.
         """
         action = np.asarray(action, dtype=np.float64).reshape(-1)
-        print(f"Raw action: {action}")
+        # print(f"Raw action: {action}")
         delta_pos = self._cartesian_action_scale * action[:3]
         delta_rpy = self._cartesian_rotation_scale_rad * action[3:6]
-        print(f"Delta pos: {delta_pos}, Delta RPY: {delta_rpy}")
+        # print(f"Delta pos: {delta_pos}, Delta RPY: {delta_rpy}")
 
         if self._smooth_cartesian_target:
             base_pos = self._ik_target_pos.copy()
@@ -659,10 +642,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         x = self.np_random.uniform(*self._object_x_range)
         y = self.np_random.uniform(*self._object_y_range)
         z = self._object_z
-        yaw = self.np_random.uniform(
-            -self._object_yaw_limit_rad,
-            self._object_yaw_limit_rad,
-        )
+        yaw = self.np_random.uniform(*self._object_yaw_range)
         pos = np.array([x, y, z], dtype=np.float64)
         quat = self._yaw_to_quat(yaw)
         return pos, quat, float(yaw)
@@ -711,6 +691,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
 
         dist = float(np.linalg.norm(ee_obj_pos_error))
         angle = float(np.linalg.norm(ee_obj_rot_error))
+        # print(f"Grasp heuristic: dist={dist:.4f}, angle={np.rad2deg(angle):.1f} deg")
         should_close = (
             dist < self._grasp_close_distance and angle < self._grasp_close_angle_rad
         )
@@ -722,6 +703,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
 
         if self.grasp_latched:
             self._set_closed_gripper_target(ctrl)
+            # print(f"Gripper Closed")
         else:
             self._set_open_gripper_target(ctrl)
 
@@ -734,7 +716,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         from the previous joint target to the new IK joint target.
         """
         self.current_step += 1
-
+        # print(f"Step {self.current_step}")
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
         self._apply_grasp_heuristic(target_ctrl)
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
@@ -758,20 +740,13 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
 
         return observation, reward, terminated, truncated, reward_info
 
-    def _target_reached(self, obj_target_dist: float, obj_target_angle: float) -> bool:
-        if obj_target_dist >= self._success_distance:
-            return False
-        if (
-            self._success_requires_orientation
-            and obj_target_angle >= self._success_angle_rad
-        ):
-            return False
-        return True
+    def _target_reached(self, lift_height: float) -> bool:
+        return float(lift_height) >= self._lift_height
 
     def _get_rew(self, action: np.ndarray) -> tuple[float, dict]:
         ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
-        target_pos, target_quat = self._get_target_pose()
+        lift_target_pos, lift_target_quat = self._get_target_pose()
 
         ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
             ee_pos,
@@ -782,31 +757,30 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos,
             obj_quat,
-            target_pos,
-            target_quat,
+            lift_target_pos,
+            lift_target_quat,
         )
 
         ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
         ee_obj_angle = float(np.linalg.norm(ee_obj_rot_error))
         obj_target_dist = float(np.linalg.norm(obj_target_pos_error))
         obj_target_angle = float(np.linalg.norm(obj_target_rot_error))
+        lift_height = float(obj_pos[2] - self.initial_obj_site_pos[2])
+        lift_error = max(0.0, self._lift_height - lift_height)
 
-        reward_ee_obj_dist = -ee_obj_dist * self._reward_ee_obj_dist_weight
-        reward_ee_obj_dist_tanh = (
-            1.0 - float(np.tanh(ee_obj_dist / self._ee_obj_tanh_scale))
-        ) * self._reward_ee_obj_dist_tanh_weight
-        reward_ee_obj_orient = -ee_obj_angle * self._reward_ee_obj_orient_weight
+        reward_distance = -ee_obj_dist * self._reward_distance_weight
+        reward_distance_tanh = (
+            1.0 - float(np.tanh(ee_obj_dist / self._distance_tanh_scale))
+        ) * self._reward_distance_tanh_weight
+        reward_orientation = -ee_obj_angle * self._reward_orientation_weight
 
-        reward_obj_target_dist = -obj_target_dist * self._reward_obj_target_dist_weight
-        reward_obj_target_dist_tanh = (
-            1.0 - float(np.tanh(obj_target_dist / self._obj_target_tanh_scale))
-        ) * self._reward_obj_target_dist_tanh_weight
-        reward_obj_target_orient = (
-            -obj_target_angle * self._reward_obj_target_orient_weight
-        )
-        reward_grasp = self._reward_grasp_bonus if self.grasp_latched else 0.0
-
-        target_reached = self._target_reached(obj_target_dist, obj_target_angle)
+        reward_dist_bonus = 0.0
+        if (
+            ee_obj_dist < self._success_distance
+            and ee_obj_angle < self._success_angle_rad
+        ):
+            reward_dist_bonus = 15.0 * (self._success_distance - ee_obj_dist)
+        target_reached = self._target_reached(lift_height)
         if target_reached:
             self.success_counter += 1
             reward_target_bonus = self._reward_target_bonus
@@ -819,33 +793,31 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         )
 
         reward = (
-            reward_ee_obj_dist
-            + reward_ee_obj_dist_tanh
-            + reward_ee_obj_orient
-            + reward_obj_target_dist
-            + reward_obj_target_dist_tanh
-            + reward_obj_target_orient
-            + reward_grasp
+            reward_distance
+            + reward_distance_tanh
+            + reward_orientation
+            + reward_dist_bonus
             + reward_target_bonus
             + control_penalty
         )
-        print(f"Reward total: {reward:.3f}")
 
         reward_info = {
             "active_object": self.active_obj_name,
             "ee_object_dist": ee_obj_dist,
             "ee_object_rot_error": ee_obj_angle,
+            "ee_target_dist": ee_obj_dist,
+            "ee_target_angle_rad": ee_obj_angle,
+            "target_dist": ee_obj_dist,
             "object_target_dist": obj_target_dist,
             "object_target_rot_error": obj_target_angle,
+            "lift_height": lift_height,
+            "required_lift_height": float(self._lift_height),
+            "lift_error": lift_error,
             "target_reached": int(target_reached),
             "success_counter": int(self.success_counter),
-            "reward_ee_object_dist": float(reward_ee_obj_dist),
-            "reward_ee_object_dist_tanh": float(reward_ee_obj_dist_tanh),
-            "reward_ee_object_orient": float(reward_ee_obj_orient),
-            "reward_object_target_dist": float(reward_obj_target_dist),
-            "reward_object_target_dist_tanh": float(reward_obj_target_dist_tanh),
-            "reward_object_target_orient": float(reward_obj_target_orient),
-            "reward_grasp": float(reward_grasp),
+            "reward_distance": float(reward_distance),
+            "reward_distance_tanh": float(reward_distance_tanh),
+            "reward_orientation": float(reward_orientation),
             "reward_target_bonus": float(reward_target_bonus),
             "control_penalty": float(control_penalty),
             "ik_success": (
@@ -855,12 +827,19 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             ),
             "ik_failure_count": int(self._ik_failure_count),
             # Backward-compatible metric names used by the training/eval overlays.
-            "reward_dist": float(reward_ee_obj_dist),
-            "reward_dist_tanh": float(reward_ee_obj_dist_tanh),
-            "reward_orient": float(reward_ee_obj_orient),
-            "reward_target": float(reward_obj_target_dist),
-            "reward_target_tanh": float(reward_obj_target_dist_tanh),
-            "reward_target_orient": float(reward_obj_target_orient),
+            "reward_ee_object_dist": float(reward_distance),
+            "reward_ee_object_dist_tanh": float(reward_distance_tanh),
+            "reward_ee_object_orient": float(reward_orientation),
+            "reward_object_target_dist": 0.0,
+            "reward_object_target_dist_tanh": 0.0,
+            "reward_object_target_orient": 0.0,
+            "reward_dist": float(reward_distance),
+            "reward_dist_tanh": float(reward_distance_tanh),
+            "reward_dist_bonus": float(reward_dist_bonus),
+            "reward_orient": float(reward_orientation),
+            "reward_target": 0.0,
+            "reward_target_tanh": 0.0,
+            "reward_target_orient": 0.0,
             "grasp_latched": int(self.grasp_latched),
         }
         return float(reward), reward_info
@@ -926,27 +905,16 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
     def _get_obs_components(self) -> list[tuple[str, np.ndarray]]:
         qpos = self.data.qpos
         qvel = self.data.qvel
-
         first_object_qposadr = min(
             int(info["qposadr"]) for info in self.object_info.values()
         )
         first_object_dofadr = min(
             int(info["dofadr"]) for info in self.object_info.values()
         )
-
         robot_qpos = qpos[:first_object_qposadr]
         robot_qvel = qvel[:first_object_dofadr]
-        gripper_qpos = qpos[[self.gripL_qadr, self.gripR_qadr]].copy()
-        gripper_qvel = qvel[[self.gripL_dadr, self.gripR_dadr]].copy()
-        gripper_ctrl = self.data.ctrl[[self.gripL_act_id, self.gripR_act_id]].copy()
-        gripper_closed = np.array(
-            [1.0 if self.gripper_state == "closed" else 0.0],
-            dtype=np.float64,
-        )
-
         ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
-        target_pos, target_quat = self._get_target_pose()
 
         ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
             ee_pos,
@@ -954,35 +922,18 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             obj_pos,
             obj_quat,
         )
-        obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
-            obj_pos,
-            obj_quat,
-            target_pos,
-            target_quat,
+        target_delta_euler = self._wrap_vector_to_pi(
+            _quat_to_euler_xyz(obj_quat) - _quat_to_euler_xyz(ee_quat)
         )
-        lift_height = float(obj_pos[2] - self.initial_obj_site_pos[2])
 
         metrics = np.array(
             [
                 np.linalg.norm(ee_obj_pos_error),
                 np.linalg.norm(ee_obj_rot_error),
-                np.linalg.norm(obj_target_pos_error),
-                np.linalg.norm(obj_target_rot_error),
-                lift_height,
-                float(self.grasp_latched),
                 float(self.success_counter),
                 float(self._ik_failure_count),
-                float(
-                    0.0
-                    if not np.isfinite(self.last_grasp_dist)
-                    else self.last_grasp_dist
-                ),
-                float(
-                    0.0
-                    if not np.isfinite(self.last_grasp_angle)
-                    else self.last_grasp_angle
-                ),
                 float(self.sampled_object_yaw),
+                float(obj_pos[2]),
             ],
             dtype=np.float64,
         )
@@ -990,21 +941,13 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         return [
             ("robot_qpos", robot_qpos),
             ("robot_qvel", robot_qvel),
-            ("gripper_qpos", gripper_qpos),
-            ("gripper_qvel", gripper_qvel),
-            ("gripper_ctrl", gripper_ctrl),
-            ("gripper_closed", gripper_closed),
-            ("object_type", self.object_one_hot[self.active_obj_name]),
             ("ee_pos", ee_pos),
             ("ee_quat", ee_quat),
-            ("object_pos", obj_pos),
-            ("object_quat", obj_quat),
-            ("target_pos", target_pos),
-            ("target_quat", target_quat),
-            ("ee_object_pos_error", ee_obj_pos_error),
-            ("ee_object_rot_error", ee_obj_rot_error),
-            ("object_target_pos_error", obj_target_pos_error),
-            ("object_target_rot_error", obj_target_rot_error),
+            ("target_pos", obj_pos),
+            ("target_quat", obj_quat),
+            ("ee_target_pos_error", ee_obj_pos_error),
+            ("ee_target_rot_error", ee_obj_rot_error),
+            ("target_delta_euler", target_delta_euler),
             ("ik_target_pos", self._ik_target_pos),
             ("ik_target_quat", self._ik_target_quat),
             ("last_action", self.last_action),
@@ -1100,8 +1043,10 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         config["action"]["gripper_policy"] = "distance_orientation_heuristic"
         config["action"]["gripper_open_target"] = [0.01, -0.01]
         config["action"]["gripper_closed_target"] = [-0.02, 0.02]
-        config["task"]["target_mode"] = "lift_active_object_above_initial_site"
-        config["task"]["target_site_name"] = self.target_site_name
+        config["task"]["target_mode"] = "active_object_as_reaching_target"
+        config["task"]["success_condition"] = "active_object_lift_height"
+        config["task"]["required_lift_height"] = float(self._lift_height)
+        config["task"]["visual_lift_target_site_name"] = self.target_site_name
         config["task"]["object_frame_body_name"] = self.object_frame_body_name
         config["task"]["target_frame_body_name"] = self.target_frame_body_name
         config["task"]["success_requires_orientation"] = bool(
@@ -1112,7 +1057,7 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
     def get_debug_state(self) -> dict:
         ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
-        target_pos, target_quat = self._get_target_pose()
+        lift_target_pos, lift_target_quat = self._get_target_pose()
         ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
             ee_pos,
             ee_quat,
@@ -1122,12 +1067,19 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos,
             obj_quat,
-            target_pos,
-            target_quat,
+            lift_target_pos,
+            lift_target_quat,
         )
+        ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
+        ee_obj_angle = float(np.linalg.norm(ee_obj_rot_error))
         obj_target_dist = float(np.linalg.norm(obj_target_pos_error))
         obj_target_angle = float(np.linalg.norm(obj_target_rot_error))
-        target_reached = self._target_reached(obj_target_dist, obj_target_angle)
+        lift_height = float(obj_pos[2] - self.initial_obj_site_pos[2])
+        lift_error = max(0.0, self._lift_height - lift_height)
+        target_reached = self._target_reached(lift_height)
+        target_delta_euler = self._wrap_vector_to_pi(
+            _quat_to_euler_xyz(obj_quat) - _quat_to_euler_xyz(ee_quat)
+        )
 
         return {
             "active_object": self.active_obj_name,
@@ -1135,18 +1087,29 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
             "ee_quat": ee_quat,
             "obj_pos": obj_pos,
             "obj_quat": obj_quat,
-            "target_pos": target_pos,
-            "target_quat": target_quat,
+            "target_pos": obj_pos,
+            "target_quat": obj_quat,
+            "lift_target_pos": lift_target_pos,
+            "lift_target_quat": lift_target_quat,
             "ee_obj_pos_error": ee_obj_pos_error,
             "ee_obj_rot_error": ee_obj_rot_error,
-            "ee_obj_dist": float(np.linalg.norm(ee_obj_pos_error)),
-            "ee_obj_angle_rad": float(np.linalg.norm(ee_obj_rot_error)),
+            "ee_obj_dist": ee_obj_dist,
+            "ee_obj_angle_rad": ee_obj_angle,
+            "ee_target_pos_error": ee_obj_pos_error,
+            "ee_target_rot_error": ee_obj_rot_error,
+            "ee_target_dist": ee_obj_dist,
+            "ee_target_angle_rad": ee_obj_angle,
+            "target_dist": ee_obj_dist,
+            "target_delta_euler_deg": np.rad2deg(target_delta_euler),
             "obj_target_pos_error": obj_target_pos_error,
             "obj_target_rot_error": obj_target_rot_error,
             "obj_target_dist": obj_target_dist,
             "obj_target_angle_rad": obj_target_angle,
-            "lift_height": float(obj_pos[2] - self.initial_obj_site_pos[2]),
+            "object_target_dist": obj_target_dist,
+            "object_target_rot_error": obj_target_angle,
+            "lift_height": lift_height,
             "required_lift_height": float(self._lift_height),
+            "lift_error": lift_error,
             "success_requires_orientation": bool(self._success_requires_orientation),
             "object_yaw": float(self._quat_to_yaw(obj_quat)),
             "sampled_object_yaw": float(self.sampled_object_yaw),
