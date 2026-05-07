@@ -472,6 +472,7 @@ def main() -> None:
             GraspingEnvV1,
             GraspingEnvV2,
             InsertTargetEnv,
+            InsertTargetEnvIK,
             PlaceAboveSiteEnv,
             PlaceAboveTargetEnv,
             PlaceTargetEnv,
@@ -489,6 +490,7 @@ def main() -> None:
         "GraspingEnvV1": GraspingEnvV1,
         "GraspingEnvV2": GraspingEnvV2,
         "InsertTargetEnv": InsertTargetEnv,
+        "InsertTargetEnvIK": InsertTargetEnvIK,
         "PlaceAboveTargetEnv": PlaceAboveTargetEnv,
         "PlaceAboveSiteEnv": PlaceAboveSiteEnv,
         "PlaceTargetEnv": PlaceTargetEnv,
@@ -508,9 +510,10 @@ def main() -> None:
     render_mode = None if args.render == "none" else args.render
     env_cls = env_registry[args.env]
     env_kwargs = {}
-    if args.env in {
+    if args.env == "InsertTargetEnvIK":
+        env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
+    elif args.env in {
         "InsertTargetEnv",
-        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",

@@ -795,52 +795,21 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         reward = (
             reward_distance
             + reward_distance_tanh
-            + reward_orientation
+            # + reward_orientation
             + reward_dist_bonus
-            + reward_target_bonus
+            # + reward_target_bonus
             + control_penalty
         )
 
         reward_info = {
-            "active_object": self.active_obj_name,
             "ee_object_dist": ee_obj_dist,
             "ee_object_rot_error": ee_obj_angle,
-            "ee_target_dist": ee_obj_dist,
-            "ee_target_angle_rad": ee_obj_angle,
-            "target_dist": ee_obj_dist,
-            "object_target_dist": obj_target_dist,
-            "object_target_rot_error": obj_target_angle,
-            "lift_height": lift_height,
-            "required_lift_height": float(self._lift_height),
-            "lift_error": lift_error,
-            "target_reached": int(target_reached),
-            "success_counter": int(self.success_counter),
+            # "object_target_dist": obj_target_dist,
+            # "object_target_rot_error": obj_target_angle,
             "reward_distance": float(reward_distance),
             "reward_distance_tanh": float(reward_distance_tanh),
             "reward_orientation": float(reward_orientation),
-            "reward_target_bonus": float(reward_target_bonus),
             "control_penalty": float(control_penalty),
-            "ik_success": (
-                None
-                if self._last_ik_result is None
-                else int(bool(self._last_ik_result.success))
-            ),
-            "ik_failure_count": int(self._ik_failure_count),
-            # Backward-compatible metric names used by the training/eval overlays.
-            "reward_ee_object_dist": float(reward_distance),
-            "reward_ee_object_dist_tanh": float(reward_distance_tanh),
-            "reward_ee_object_orient": float(reward_orientation),
-            "reward_object_target_dist": 0.0,
-            "reward_object_target_dist_tanh": 0.0,
-            "reward_object_target_orient": 0.0,
-            "reward_dist": float(reward_distance),
-            "reward_dist_tanh": float(reward_distance_tanh),
-            "reward_dist_bonus": float(reward_dist_bonus),
-            "reward_orient": float(reward_orientation),
-            "reward_target": 0.0,
-            "reward_target_tanh": 0.0,
-            "reward_target_orient": 0.0,
-            "grasp_latched": int(self.grasp_latched),
         }
         return float(reward), reward_info
 

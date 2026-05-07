@@ -686,16 +686,15 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "gripper_action_scale": args.gripper_action_scale,
             }
         )
+    elif args.env == "InsertTargetEnvIK":
+        env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
     elif args.env in {
         "InsertTargetEnv",
-        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
         grasp_env_name = args.grasp_env
-        if args.env == "InsertTargetEnvIK" and grasp_env_name == "GraspingEnvV2":
-            grasp_env_name = "GraspingEnvIK"
 
         env_kwargs.update(
             {
@@ -711,11 +710,6 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env == "InsertTargetEnvIK":
-            env_kwargs["grasp_success_max_lift"] = args.grasp_max_lift
-            env_kwargs["grasp_qpos_close_threshold"] = (
-                args.grasp_qpos_close_threshold
-            )
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {

@@ -5,49 +5,28 @@ from pathlib import Path
 import mujoco
 import numpy as np
 from gymnasium.spaces import Box
-from gymnasium.utils import seeding
 
-from script.inverse_kinematics import _normalize_quat, _quat_to_euler_xyz
+from script.inverse_kinematics import (
+    _normalize_quat,
+    _quat_from_euler_xyz,
+    _quat_to_euler_xyz,
+)
 
 from .config_export import capture_init_config, export_env_config
-from .grasping_env import GraspingEnv
-from .grasping_env_ik import (
-    DEFAULT_CAMERA_CONFIG,
-    DEFAULT_XML_PATH as DEFAULT_GRASP_XML_PATH,
-    GraspingEnvIK,
-)
-from .grasping_env_v1 import GraspingEnvV1
-from .grasping_env_v2 import GraspingEnvV2
-
-try:
-    from .grasping_env_v3 import GraspingEnvV3
-except ModuleNotFoundError:
-    GraspingEnvV3 = None
+from .grasping_env_ik import DEFAULT_CAMERA_CONFIG, GraspingEnvIK
 
 DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_place.xml"
 
-GRASP_ENV_REGISTRY = {
-    "GraspingEnv": GraspingEnv,
-    "GraspingEnvIK": GraspingEnvIK,
-    "GraspingEnvV1": GraspingEnvV1,
-    "GraspingEnvV2": GraspingEnvV2,
-}
-if GraspingEnvV3 is not None:
-    GRASP_ENV_REGISTRY["GraspingEnvV3"] = GraspingEnvV3
-
-INSIDE_PLACE_BOX_HALF_EXTENTS = np.array([0.018, 0.018], dtype=np.float64)
-INSIDE_PLACE_TRIANGLE_RADIUS = 0.014
-INSIDE_PLACE_CYLINDER_RADIUS = 0.018
-INSIDE_PLACE_Z_OFFSET_MIN = -0.025
-INSIDE_PLACE_Z_OFFSET_MAX = 0.008
-
 
 class InsertTargetEnvIK(GraspingEnvIK):
-    """Insert env with Cartesian IK actions and a grasp-policy reset.
+    """Insertion/release env with 6-DoF Cartesian IK actions.
 
-    Reset is sampled from a GraspingEnvIK policy as soon as the gripper has closed.
-    The insert task then keeps the gripper closed until the object reaches the
-    release target 5 cm above the active place with sufficiently aligned yaw.
+    Reset is generated procedurally with IK only: the object is sampled first,
+    the IK target follows that object pose, the gripper closes, and the reset is
+    accepted when the object is held.
+    The task target is the active place site plus a configurable vertical offset
+    (default 3 cm). Once the object reaches that target, the gripper opens
+    manually and the dense distance/orientation shaping is disabled.
     """
 
     def __init__(
@@ -56,47 +35,66 @@ class InsertTargetEnvIK(GraspingEnvIK):
         frame_skip: int = 1,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         reward_target_weight: float = 5.0,
-        reward_target_tanh_weight: float = 0.0,
-        reward_orientation_weight: float = 0.0,
-        reward_inside_place_bonus: float = 30.0,
-        control_penalty_weight: float = 0.0,
+        reward_target_tanh_weight: float = 2.0,
+        reward_orientation_weight: float = 1.0,
+        reward_orientation_tanh_weight: float = 1.0,
+        reward_bonus: float = 20.0,
+        control_penalty_weight: float = 0.001,
         distance_tanh_scale: float = 0.05,
-        success_distance: float = 0.012,
-        success_angle_deg: float = 10.0,
+        orientation_tanh_scale: float = 0.50,
+        success_distance: float = 0.008,
         success_steps_required: int = 5,
-        max_episode_steps: int = 180,
+        max_episode_steps: int = 160,
         cartesian_action_scale: float = 0.01,
         cartesian_rotation_scale_deg: float = 10.0,
         ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.00),
         ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.45),
         ik_position_only: bool = False,
-        ik_max_iters: int = 80,
+        ik_max_iters: int = 100,
         ik_position_tolerance: float = 1e-3,
-        ik_rotation_tolerance_deg: float = 3.0,
+        ik_rotation_tolerance_deg: float = 4.0,
         ik_damping: float = 1e-3,
-        ik_step_size: float = 0.4,
-        ik_max_delta_deg: float = 5.0,
+        ik_step_size: float = 0.45,
+        ik_max_delta_deg: float = 6.0,
         ik_rotation_weight: float = 0.35,
-        ik_random_restarts: int = 0,
+        ik_random_restarts: int = 2,
         ik_seed: int | None = 0,
         control_interpolation_steps: int = 10,
         max_joint_ctrl_delta_deg: float = 5.0,
         smooth_cartesian_target: bool = True,
         debug_ik: bool = False,
-        target_x_range: tuple[float, float] = (0.16, 0.27),
-        target_y_range: tuple[float, float] = (-0.16, 0.16),
+        object_x_range: tuple[float, float] = (0.15, 0.24),
+        object_y_range: tuple[float, float] = (-0.12, 0.12),
+        object_z: float = 0.025,
+        object_yaw_range: tuple[float, float] = (-np.pi / 4.0, np.pi / 4.0),
+        target_x_range: tuple[float, float] = (0.17, 0.27),
+        target_y_range: tuple[float, float] = (-0.14, 0.14),
         target_place_z: float = 0.02,
         target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
-        target_height_above_place: float = 0.05,
+        target_height_above_place: float = 0.03,
         target_min_object_xy_distance: float = 0.06,
-        gripper_release_distance: float | None = None,
-        gripper_release_angle_deg: float = 10.0,
+        gripper_open_distance: float | None = None,
+        release_open_steps: int = 0,
         terminate_ee_obj_distance: float = 0.08,
+        reset_attempts: int = 8,
+        reset_pregrasp_height: float = 0.035,
+        reset_approach_steps: int = 35,
+        reset_pregrasp_settle_steps: int = 15,
+        reset_close_steps: int = 80,
+        reset_lift_height: float = 0.012,
+        reset_lift_steps: int = 45,
+        reset_position_noise: float = 0.003,
+        reset_orientation_noise_deg: float = 3.0,
+        reset_accept_ee_obj_dist: float = 0.028,
+        reset_accept_min_lift: float = 0.0,
+        reset_qpos_close_threshold: float = 0.001,
+        allow_reset_fallback_snapshot: bool = True,
         ee_site_name: str = "attachment_site",
         target_site_name: str = "target",
         ee_frame_body_name: str = "ee_frame_vis",
         object_frame_body_name: str = "object_frame_vis",
         target_frame_body_name: str = "target_frame_vis",
+        # Backward-compatible arguments from the old policy-reset InsertTargetEnvIK.
         grasp_model_path: str | None = None,
         grasp_env_name: str = "GraspingEnvIK",
         grasp_xml_file: str | None = None,
@@ -104,7 +102,7 @@ class InsertTargetEnvIK(GraspingEnvIK):
         grasp_attempts_per_reset: int = 6,
         grasp_deterministic: bool = True,
         grasp_success_min_lift: float | None = None,
-        grasp_success_max_lift: float | None = 0.02,
+        grasp_success_max_lift: float | None = None,
         grasp_success_ee_obj_dist: float = 0.025,
         grasp_success_hold_steps: int = 1,
         grasp_ctrl_close_threshold: float = 0.005,
@@ -115,118 +113,8 @@ class InsertTargetEnvIK(GraspingEnvIK):
     ):
         init_config = capture_init_config(locals())
         self._insert_env_ready = False
-
-        if grasp_model_path is None:
-            raise ValueError(
-                "InsertTargetEnvIK requires `grasp_model_path` so reset can start "
-                "from a trained GraspingEnvIK policy."
-            )
-
-        grasp_model_path_obj = Path(grasp_model_path).expanduser()
-        if not grasp_model_path_obj.is_absolute():
-            grasp_model_path_obj = grasp_model_path_obj.resolve()
-        if not grasp_model_path_obj.exists():
-            raise FileNotFoundError(f"Grasp model not found: {grasp_model_path_obj}")
-
-        grasp_xml_path_obj = (
-            DEFAULT_GRASP_XML_PATH
-            if grasp_xml_file is None
-            else Path(grasp_xml_file).expanduser()
-        )
-        if not grasp_xml_path_obj.is_absolute():
-            grasp_xml_path_obj = grasp_xml_path_obj.resolve()
-        if not grasp_xml_path_obj.exists():
-            raise FileNotFoundError(f"Grasp XML not found: {grasp_xml_path_obj}")
-
-        if grasp_env_name not in GRASP_ENV_REGISTRY:
-            supported = ", ".join(sorted(GRASP_ENV_REGISTRY))
-            raise ValueError(
-                f"Unsupported grasp env `{grasp_env_name}`. Expected one of: {supported}"
-            )
-
-        self._reward_target_weight = float(reward_target_weight)
-        self._reward_target_tanh_weight = float(reward_target_tanh_weight)
-        self._reward_orientation_weight = float(reward_orientation_weight)
-        self._reward_inside_place_bonus = float(reward_inside_place_bonus)
-        self._control_penalty_weight = float(control_penalty_weight)
-        self._distance_tanh_scale = float(distance_tanh_scale)
-        self._success_distance = float(success_distance)
-        self._success_angle_rad = np.deg2rad(float(success_angle_deg))
-        self._success_steps_required = int(success_steps_required)
-        self.max_episode_steps = int(max_episode_steps)
-        self._target_x_range = tuple(float(value) for value in target_x_range)
-        self._target_y_range = tuple(float(value) for value in target_y_range)
-        self._target_place_z = float(target_place_z)
-        self._target_place_yaw_range = tuple(
-            float(value) for value in target_place_yaw_range
-        )
-        self._target_height_above_place = float(target_height_above_place)
-        self._target_min_object_xy_distance = float(target_min_object_xy_distance)
-        self._gripper_release_distance = (
-            self._success_distance
-            if gripper_release_distance is None
-            else float(gripper_release_distance)
-        )
-        self._gripper_release_angle_rad = np.deg2rad(float(gripper_release_angle_deg))
-        self._terminate_ee_obj_distance = float(terminate_ee_obj_distance)
-
-        if self._distance_tanh_scale <= 0.0:
-            raise ValueError("distance_tanh_scale must be greater than 0.")
-        if self._success_distance <= 0.0:
-            raise ValueError("success_distance must be greater than 0.")
-        if self._success_angle_rad <= 0.0:
-            raise ValueError("success_angle_deg must be greater than 0.")
-        if self._success_steps_required <= 0:
-            raise ValueError("success_steps_required must be greater than 0.")
-        if self.max_episode_steps <= 0:
-            raise ValueError("max_episode_steps must be greater than 0.")
-        if self._target_x_range[0] > self._target_x_range[1]:
-            raise ValueError("target_x_range must be ordered as (min_x, max_x).")
-        if self._target_y_range[0] > self._target_y_range[1]:
-            raise ValueError("target_y_range must be ordered as (min_y, max_y).")
-        if self._target_place_yaw_range[0] > self._target_place_yaw_range[1]:
-            raise ValueError(
-                "target_place_yaw_range must be ordered as (min_yaw, max_yaw)."
-            )
-        if self._target_height_above_place <= 0.0:
-            raise ValueError("target_height_above_place must be greater than 0.")
-        if self._target_min_object_xy_distance < 0.0:
-            raise ValueError(
-                "target_min_object_xy_distance must be greater than or equal to 0."
-            )
-        if self._gripper_release_distance <= 0.0:
-            raise ValueError("gripper_release_distance must be greater than 0.")
-        if self._gripper_release_angle_rad <= 0.0:
-            raise ValueError("gripper_release_angle_deg must be greater than 0.")
-        if self._terminate_ee_obj_distance <= 0.0:
-            raise ValueError("terminate_ee_obj_distance must be greater than 0.")
-        grasp_qpos_close_threshold = float(grasp_qpos_close_threshold)
-        if grasp_qpos_close_threshold <= 0.0:
-            raise ValueError("grasp_qpos_close_threshold must be greater than 0.")
-
-        self._grasp_model_path = grasp_model_path_obj
-        self._grasp_env_name = str(grasp_env_name)
-        self._grasp_xml_path = grasp_xml_path_obj
-        self._grasp_max_steps = int(grasp_max_steps)
-        self._grasp_attempts_per_reset = max(1, int(grasp_attempts_per_reset))
-        self._grasp_deterministic = bool(grasp_deterministic)
-        self._grasp_success_min_lift = grasp_success_min_lift
-        self._grasp_success_max_lift = (
-            None if grasp_success_max_lift is None else float(grasp_success_max_lift)
-        )
-        self._grasp_success_ee_obj_dist = float(grasp_success_ee_obj_dist)
-        self._grasp_success_hold_steps = max(1, int(grasp_success_hold_steps))
-        self._grasp_ctrl_close_threshold = float(grasp_ctrl_close_threshold)
-        self._grasp_qpos_close_threshold = grasp_qpos_close_threshold
-        self._grasp_transfer_settle_steps = max(0, int(grasp_transfer_settle_steps))
-        self._allow_grasp_fallback_snapshot = bool(allow_grasp_fallback_snapshot)
-        self._grasp_env = None
-        self._grasp_policy = None
-
-        self._last_grasp_reset_attempts = 0
-        self._last_grasp_init_lift_height = 0.0
-        self._last_grasp_init_ee_obj_dist = np.inf
-        self._last_grasp_reset_source = "uninitialized"
+        self._gripper_open_target = np.array([0.01, -0.01], dtype=np.float64)
+        self._gripper_closed_target = np.array([-0.02, 0.02], dtype=np.float64)
 
         super().__init__(
             xml_file=xml_file,
@@ -235,12 +123,12 @@ class InsertTargetEnvIK(GraspingEnvIK):
             reward_distance_weight=reward_target_weight,
             reward_distance_tanh_weight=reward_target_tanh_weight,
             reward_orientation_weight=reward_orientation_weight,
-            reward_target_bonus=reward_inside_place_bonus,
+            reward_target_bonus=reward_bonus,
             control_penalty_weight=control_penalty_weight,
             distance_tanh_scale=distance_tanh_scale,
             success_distance=success_distance,
-            success_angle_deg=success_angle_deg,
-            success_requires_orientation=True,
+            success_angle_deg=180.0,
+            success_requires_orientation=False,
             success_steps_required=success_steps_required,
             max_episode_steps=max_episode_steps,
             cartesian_action_scale=cartesian_action_scale,
@@ -261,6 +149,11 @@ class InsertTargetEnvIK(GraspingEnvIK):
             max_joint_ctrl_delta_deg=max_joint_ctrl_delta_deg,
             smooth_cartesian_target=smooth_cartesian_target,
             debug_ik=debug_ik,
+            object_x_range=object_x_range,
+            object_y_range=object_y_range,
+            object_z=object_z,
+            object_yaw_range=object_yaw_range,
+            lift_height=target_height_above_place,
             ee_site_name=ee_site_name,
             target_site_name=target_site_name,
             ee_frame_body_name=ee_frame_body_name,
@@ -270,6 +163,83 @@ class InsertTargetEnvIK(GraspingEnvIK):
         )
         self._init_config = init_config
 
+        self._reward_target_weight = float(reward_target_weight)
+        self._reward_target_tanh_weight = float(reward_target_tanh_weight)
+        self._reward_orientation_weight = float(reward_orientation_weight)
+        self._reward_orientation_tanh_weight = float(reward_orientation_tanh_weight)
+        self._reward_bonus = float(reward_bonus)
+        self._control_penalty_weight = float(control_penalty_weight)
+        self._distance_tanh_scale = float(distance_tanh_scale)
+        self._orientation_tanh_scale = float(orientation_tanh_scale)
+        self._success_distance = float(success_distance)
+        self._success_steps_required = int(success_steps_required)
+        self.max_episode_steps = int(max_episode_steps)
+        self._target_x_range = tuple(float(value) for value in target_x_range)
+        self._target_y_range = tuple(float(value) for value in target_y_range)
+        self._target_place_z = float(target_place_z)
+        self._target_place_yaw_range = tuple(
+            float(value) for value in target_place_yaw_range
+        )
+        self._target_height_above_place = float(target_height_above_place)
+        self._target_min_object_xy_distance = float(target_min_object_xy_distance)
+        self._gripper_open_distance = (
+            self._success_distance
+            if gripper_open_distance is None
+            else float(gripper_open_distance)
+        )
+        self._release_open_steps = max(0, int(release_open_steps))
+        self._terminate_ee_obj_distance = float(terminate_ee_obj_distance)
+        self._reset_attempts = max(1, int(reset_attempts))
+        self._reset_pregrasp_height = float(reset_pregrasp_height)
+        self._reset_approach_steps = max(1, int(reset_approach_steps))
+        self._reset_pregrasp_settle_steps = max(0, int(reset_pregrasp_settle_steps))
+        self._reset_close_steps = max(1, int(reset_close_steps))
+        self._reset_lift_height = float(reset_lift_height)
+        self._reset_lift_steps = max(1, int(reset_lift_steps))
+        self._reset_position_noise = float(reset_position_noise)
+        self._reset_orientation_noise_rad = np.deg2rad(float(reset_orientation_noise_deg))
+        self._reset_accept_ee_obj_dist = float(reset_accept_ee_obj_dist)
+        self._reset_accept_min_lift = float(reset_accept_min_lift)
+        self._reset_qpos_close_threshold = float(reset_qpos_close_threshold)
+        self._allow_reset_fallback_snapshot = bool(allow_reset_fallback_snapshot)
+        self._grasp_ctrl_close_threshold = float(grasp_ctrl_close_threshold)
+
+        if self._distance_tanh_scale <= 0.0:
+            raise ValueError("distance_tanh_scale must be greater than 0.")
+        if self._orientation_tanh_scale <= 0.0:
+            raise ValueError("orientation_tanh_scale must be greater than 0.")
+        if self._success_distance <= 0.0:
+            raise ValueError("success_distance must be greater than 0.")
+        if self._target_height_above_place <= 0.0:
+            raise ValueError("target_height_above_place must be greater than 0.")
+        if self._gripper_open_distance <= 0.0:
+            raise ValueError("gripper_open_distance must be greater than 0.")
+        if self._terminate_ee_obj_distance <= 0.0:
+            raise ValueError("terminate_ee_obj_distance must be greater than 0.")
+        if self._reset_pregrasp_height < 0.0:
+            raise ValueError("reset_pregrasp_height must be non-negative.")
+        if self._reset_lift_height < 0.0:
+            raise ValueError("reset_lift_height must be non-negative.")
+        if self._reset_position_noise < 0.0:
+            raise ValueError("reset_position_noise must be non-negative.")
+        if self._target_x_range[0] > self._target_x_range[1]:
+            raise ValueError("target_x_range must be ordered as (min_x, max_x).")
+        if self._target_y_range[0] > self._target_y_range[1]:
+            raise ValueError("target_y_range must be ordered as (min_y, max_y).")
+        if self._target_place_yaw_range[0] > self._target_place_yaw_range[1]:
+            raise ValueError("target_place_yaw_range must be ordered as (min_yaw, max_yaw).")
+
+        self._arm_dof_indices = np.array(
+            [
+                self.model.jnt_dofadr[
+                    self._require_named_id(
+                        mujoco.mjtObj.mjOBJ_JOINT, joint_name, "joint"
+                    )
+                ]
+                for joint_name in self._arm_joint_names
+            ],
+            dtype=np.int64,
+        )
         self.place_name_by_object = {
             "box": "cube_place",
             "triangle": "tri_place",
@@ -290,22 +260,13 @@ class InsertTargetEnvIK(GraspingEnvIK):
             body_name = self.place_name_by_object[obj_name]
             site_name = self.place_site_name_by_object[obj_name]
             geom_name = self.place_geom_name_by_object[obj_name]
-            body_id = self._require_named_id(
-                mujoco.mjtObj.mjOBJ_BODY, body_name, "body"
-            )
-            site_id = self._require_named_id(
-                mujoco.mjtObj.mjOBJ_SITE, site_name, "site"
-            )
-            geom_id = self._require_named_id(
-                mujoco.mjtObj.mjOBJ_GEOM, geom_name, "geom"
-            )
             self.place_info[obj_name] = {
                 "body_name": body_name,
                 "site_name": site_name,
                 "geom_name": geom_name,
-                "body_id": body_id,
-                "site_id": site_id,
-                "geom_id": geom_id,
+                "body_id": self._require_named_id(mujoco.mjtObj.mjOBJ_BODY, body_name, "body"),
+                "site_id": self._require_named_id(mujoco.mjtObj.mjOBJ_SITE, site_name, "site"),
+                "geom_id": self._require_named_id(mujoco.mjtObj.mjOBJ_GEOM, geom_name, "geom"),
             }
 
         self.place_geom_rgba = {
@@ -330,26 +291,30 @@ class InsertTargetEnvIK(GraspingEnvIK):
                 _normalize_quat(self.model.site_quat[site_id].copy()),
             )
 
-        self.sampled_target_place_site_pos = np.zeros(3, dtype=np.float64)
-        self.sampled_target_place_site_quat = np.array(
-            [1.0, 0.0, 0.0, 0.0], dtype=np.float64
-        )
-        self.sampled_target_place_pos = np.zeros(3, dtype=np.float64)
-        self.sampled_target_place_quat = np.array(
-            [1.0, 0.0, 0.0, 0.0], dtype=np.float64
-        )
-        self.sampled_target_place_yaw = 0.0
-        self.applied_target_place_yaw = 0.0
         self.gripper_release_latched = False
-        self.last_gripper_should_release = False
+        self.object_grasp_attached = False
+        self._grasp_site_offset_ee = np.zeros(3, dtype=np.float64)
+        self._grasp_relative_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.last_gripper_should_open = False
         self.last_release_target_dist = np.inf
         self.last_release_target_angle = np.inf
-        self.last_inside_place = False
-        self.initial_object_target_dist = np.inf
-        self.best_object_target_dist = np.inf
+        self.last_reset_source = "uninitialized"
+        self.last_reset_attempts = 0
+        self.last_reset_lift_height = 0.0
+        self.last_reset_ee_obj_dist = np.inf
+        self.sampled_target_place_site_pos = np.zeros(3, dtype=np.float64)
+        self.sampled_target_place_site_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.sampled_target_place_pos = np.zeros(3, dtype=np.float64)
+        self.sampled_target_place_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.sampled_target_place_yaw = 0.0
+        self.applied_target_place_yaw = 0.0
+        self.sampled_target_site_pos = np.zeros(3, dtype=np.float64)
+        self.sampled_target_site_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.reset_grasp_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.reset_grasp_position_noise = np.zeros(3, dtype=np.float64)
 
         self._insert_env_ready = True
-        self._sync_target_site_to_release_pose()
+        self._sync_target_site_to_above_place()
         self.sync_visual_frames()
         dummy_obs = self._get_obs()
         self.observation_space = Box(
@@ -362,15 +327,9 @@ class InsertTargetEnvIK(GraspingEnvIK):
     @staticmethod
     def _quat_rotate_vector(quat: np.ndarray, vec: np.ndarray) -> np.ndarray:
         quat = _normalize_quat(np.asarray(quat, dtype=np.float64))
-        vec_quat = np.array(
-            [0.0, *np.asarray(vec, dtype=np.float64)],
-            dtype=np.float64,
-        )
+        vec_quat = np.array([0.0, *np.asarray(vec, dtype=np.float64)], dtype=np.float64)
         rotated = GraspingEnvIK._quat_multiply(
-            GraspingEnvIK._quat_multiply(
-                quat,
-                vec_quat,
-            ),
+            GraspingEnvIK._quat_multiply(quat, vec_quat),
             GraspingEnvIK._quat_conjugate(quat),
         )
         return rotated[1:]
@@ -380,28 +339,6 @@ class InsertTargetEnvIK(GraspingEnvIK):
 
     def _get_active_place_site_pose(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_site_pose(str(self._get_active_place_info()["site_name"]))
-
-    def _get_pose_in_body_frame(
-        self,
-        world_pos: np.ndarray,
-        world_quat: np.ndarray,
-        body_pos: np.ndarray,
-        body_quat: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        body_quat = _normalize_quat(np.asarray(body_quat, dtype=np.float64))
-        body_quat_conj = self._quat_conjugate(body_quat)
-        local_pos = self._quat_rotate_vector(
-            body_quat_conj,
-            np.asarray(world_pos, dtype=np.float64)
-            - np.asarray(body_pos, dtype=np.float64),
-        )
-        local_quat = _normalize_quat(
-            self._quat_multiply(
-                body_quat_conj,
-                np.asarray(world_quat, dtype=np.float64),
-            )
-        )
-        return local_pos, local_quat
 
     def _pose_to_body_transform(
         self,
@@ -459,23 +396,6 @@ class InsertTargetEnvIK(GraspingEnvIK):
         self.model.body_pos[self.target_body_id] = body_pos
         self.model.body_quat[self.target_body_id] = body_quat
 
-    def _sync_target_site_to_release_pose(self) -> None:
-        place_site_pos, place_site_quat = self._get_active_place_site_pose()
-        release_target_pos = place_site_pos.copy()
-        release_target_pos[2] += self._target_height_above_place
-        self._set_target_site_pose_in_model(release_target_pos, place_site_quat)
-        mujoco.mj_forward(self.model, self.data)
-
-    def _set_active_place_visual(self) -> None:
-        for obj_name, info in self.place_info.items():
-            rgba = self.place_geom_rgba[obj_name].copy()
-            rgba[3] = (
-                self.place_geom_rgba[obj_name][3]
-                if obj_name == self.active_obj_name
-                else 0.0
-            )
-            self.model.geom_rgba[int(info["geom_id"])] = rgba
-
     def _set_place_poses_in_model(
         self,
         active_place_pos: np.ndarray,
@@ -483,29 +403,31 @@ class InsertTargetEnvIK(GraspingEnvIK):
     ) -> None:
         identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         for index, obj_name in enumerate(self.object_names):
-            info = self.place_info[obj_name]
-            body_id = int(info["body_id"])
+            body_id = int(self.place_info[obj_name]["body_id"])
             if obj_name == self.active_obj_name:
-                self.model.body_pos[body_id] = np.asarray(
-                    active_place_pos, dtype=np.float64
-                ).reshape(3)
+                self.model.body_pos[body_id] = np.asarray(active_place_pos, dtype=np.float64)
                 self.model.body_quat[body_id] = _normalize_quat(active_place_quat)
             else:
-                self.model.body_pos[body_id] = np.array(
-                    [2.0 + index, 2.0, 0.2],
-                    dtype=np.float64,
-                )
+                self.model.body_pos[body_id] = np.array([2.0 + index, 2.0, 0.2], dtype=np.float64)
                 self.model.body_quat[body_id] = identity_quat
 
-    def _sample_target_place_pose(
-        self,
-        object_pos: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-        chosen_site_pos = None
-        chosen_site_quat = None
-        chosen_yaw = 0.0
+    def _set_active_place_visual(self) -> None:
+        for obj_name, info in self.place_info.items():
+            rgba = self.place_geom_rgba[obj_name].copy()
+            if obj_name != self.active_obj_name:
+                rgba[3] = 0.0
+            self.model.geom_rgba[int(info["geom_id"])] = rgba
 
-        for _ in range(50):
+    def _sample_target_place_site_pose(
+        self,
+        object_pos: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+        object_xy = np.asarray(object_pos, dtype=np.float64)[:2]
+        best_site_pos = None
+        best_dist = -np.inf
+        target_place_yaw = 0.0
+
+        for _ in range(100):
             site_pos = np.array(
                 [
                     self.np_random.uniform(*self._target_x_range),
@@ -514,357 +436,540 @@ class InsertTargetEnvIK(GraspingEnvIK):
                 ],
                 dtype=np.float64,
             )
-            yaw = float(self.np_random.uniform(*self._target_place_yaw_range))
-            site_quat = self._yaw_to_quat(yaw)
-            chosen_site_pos = site_pos
-            chosen_site_quat = site_quat
-            chosen_yaw = yaw
-
-            if object_pos is None or self._target_min_object_xy_distance <= 0.0:
-                break
-
-            xy_distance = float(
-                np.linalg.norm(
-                    site_pos[:2] - np.asarray(object_pos, dtype=np.float64)[:2]
-                )
+            target_place_yaw = float(
+                self.np_random.uniform(*self._target_place_yaw_range)
             )
-            if xy_distance >= self._target_min_object_xy_distance:
+            dist = float(np.linalg.norm(site_pos[:2] - object_xy))
+            if dist > best_dist:
+                best_site_pos = site_pos
+                best_dist = dist
+            if dist >= self._target_min_object_xy_distance:
                 break
 
-        assert chosen_site_pos is not None
-        assert chosen_site_quat is not None
-        body_pos, body_quat = self._target_place_site_pose_to_place_body_pose(
-            chosen_site_pos,
-            chosen_site_quat,
+        assert best_site_pos is not None
+        site_quat = self._yaw_to_quat(target_place_yaw)
+        place_pos, place_quat = self._target_place_site_pose_to_place_body_pose(
+            best_site_pos,
+            site_quat,
         )
-        return chosen_site_pos, chosen_site_quat, body_pos, body_quat, chosen_yaw
+        return best_site_pos, site_quat, place_pos, place_quat, target_place_yaw
 
-    @staticmethod
-    def _joint_name_map(model) -> dict[str, int]:
-        joint_map: dict[str, int] = {}
-        for joint_id in range(int(model.njnt)):
-            joint_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
-            if joint_name:
-                joint_map[str(joint_name)] = joint_id
-        return joint_map
-
-    @staticmethod
-    def _joint_qpos_size(model, joint_id: int) -> int:
-        joint_type = int(model.jnt_type[joint_id])
-        if joint_type == mujoco.mjtJoint.mjJNT_FREE:
-            return 7
-        if joint_type == mujoco.mjtJoint.mjJNT_BALL:
-            return 4
-        return 1
-
-    @staticmethod
-    def _joint_dof_size(model, joint_id: int) -> int:
-        joint_type = int(model.jnt_type[joint_id])
-        if joint_type == mujoco.mjtJoint.mjJNT_FREE:
-            return 6
-        if joint_type == mujoco.mjtJoint.mjJNT_BALL:
-            return 3
-        return 1
-
-    def _ensure_grasp_policy_loaded(self) -> None:
-        if self._grasp_env is not None and self._grasp_policy is not None:
+    def _sync_target_site_to_above_place(self) -> None:
+        if not getattr(self, "_insert_env_ready", False):
             return
 
-        try:
-            from stable_baselines3 import SAC
-        except ModuleNotFoundError as exc:
-            raise ModuleNotFoundError(
-                "InsertTargetEnvIK requires stable-baselines3 to load the grasping policy."
-            ) from exc
-
-        grasp_env_cls = GRASP_ENV_REGISTRY[self._grasp_env_name]
-        grasp_env_kwargs = {
-            "xml_file": str(self._grasp_xml_path),
-            "render_mode": None,
-        }
-        if self._grasp_env_name == "GraspingEnvV2":
-            grasp_env_kwargs["gripper_assist_steps"] = 0
-
-        self._grasp_env = grasp_env_cls(**grasp_env_kwargs)
-        self._grasp_policy = SAC.load(
-            str(self._grasp_model_path),
-            env=self._grasp_env,
-            device="auto",
+        mujoco.mj_forward(self.model, self.data)
+        place_site_pos, place_site_quat = self._get_active_place_site_pose()
+        target_pos = place_site_pos + np.array(
+            [0.0, 0.0, self._target_height_above_place],
+            dtype=np.float64,
         )
+        self._set_target_site_pose_in_model(target_pos, place_site_quat)
+        mujoco.mj_forward(self.model, self.data)
+        self.sampled_target_site_pos, self.sampled_target_site_quat = self._get_target_pose()
 
-    def _get_grasp_obj_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        grasp_env = self._grasp_env
-        assert grasp_env is not None
-
-        active_obj_name = str(grasp_env.active_obj_name)
-        info = grasp_env.object_info[active_obj_name]
-        site_name = str(info["site_name"])
-        obj_pos = grasp_env.data.site(site_name).xpos.copy()
-        obj_quat = np.zeros(4, dtype=np.float64)
-        mujoco.mju_mat2Quat(obj_quat, grasp_env.data.site(site_name).xmat)
-        return obj_pos, _normalize_quat(obj_quat)
-
-    def _get_grasp_ee_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        grasp_env = self._grasp_env
-        assert grasp_env is not None
-
-        ee_pos = grasp_env.data.site(self.ee_site_name).xpos.copy()
-        ee_quat = np.zeros(4, dtype=np.float64)
-        mujoco.mju_mat2Quat(ee_quat, grasp_env.data.site(self.ee_site_name).xmat)
-        return ee_pos, _normalize_quat(ee_quat)
-
-    def _get_grasp_object_speed(self) -> float:
-        grasp_env = self._grasp_env
-        assert grasp_env is not None
-
-        active_obj_name = str(grasp_env.active_obj_name)
-        info = grasp_env.object_info[active_obj_name]
-        dofadr = int(info["dofadr"])
-        return float(np.linalg.norm(grasp_env.data.qvel[dofadr : dofadr + 3]))
-
-    def _capture_grasp_snapshot(self, initial_obj_pos: np.ndarray) -> dict:
-        grasp_env = self._grasp_env
-        assert grasp_env is not None
-
-        gripL_qadr = int(getattr(grasp_env, "gripL_qadr", self.gripL_qadr))
-        gripR_qadr = int(getattr(grasp_env, "gripR_qadr", self.gripR_qadr))
-        gripL_dadr = int(getattr(grasp_env, "gripL_dadr", self.gripL_dadr))
-        gripR_dadr = int(getattr(grasp_env, "gripR_dadr", self.gripR_dadr))
-        gripL_act_id = int(getattr(grasp_env, "gripL_act_id", self.gripL_act_id))
-        gripR_act_id = int(getattr(grasp_env, "gripR_act_id", self.gripR_act_id))
-        obj_pos, obj_quat = self._get_grasp_obj_pose()
-        ee_pos, ee_quat = self._get_grasp_ee_pose()
-        ee_obj_pos_error, _ = self._get_pose_error(ee_pos, ee_quat, obj_pos, obj_quat)
-        lift_height = float(obj_pos[2] - initial_obj_pos[2])
-        ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
-
-        return {
-            "qpos": grasp_env.data.qpos.copy(),
-            "qvel": grasp_env.data.qvel.copy(),
-            "ctrl": grasp_env.data.ctrl.copy(),
-            "active_object": str(grasp_env.active_obj_name),
-            "obj_pos": obj_pos,
-            "obj_quat": obj_quat,
-            "ee_pos": ee_pos,
-            "ee_quat": ee_quat,
-            "lift_height": lift_height,
-            "ee_obj_dist": ee_obj_dist,
-            "object_speed": self._get_grasp_object_speed(),
-            "gripper_qpos": grasp_env.data.qpos[[gripL_qadr, gripR_qadr]].copy(),
-            "gripper_qvel": grasp_env.data.qvel[[gripL_dadr, gripR_dadr]].copy(),
-            "gripper_ctrl": grasp_env.data.ctrl[[gripL_act_id, gripR_act_id]].copy(),
-            "gripper_state": str(getattr(grasp_env, "gripper_state", "unknown")),
-            "grasp_latched": bool(getattr(grasp_env, "grasp_latched", False)),
-        }
-
-    def _snapshot_gripper_closed(self, snapshot: dict) -> bool:
-        ctrl = np.asarray(snapshot["gripper_ctrl"], dtype=np.float64)
-        qpos = np.asarray(snapshot["gripper_qpos"], dtype=np.float64)
-        return bool(
-            ctrl[0] < -self._grasp_ctrl_close_threshold
-            and ctrl[1] > self._grasp_ctrl_close_threshold
-            and qpos[0] < -self._grasp_qpos_close_threshold
-            and qpos[1] > self._grasp_qpos_close_threshold
-        )
-
-    def _is_good_grasp_snapshot(self, snapshot: dict) -> bool:
-        lift_ok = True
-        if self._grasp_success_max_lift is not None:
-            lift_ok = float(snapshot["lift_height"]) <= self._grasp_success_max_lift
-
-        return bool(
-            self._snapshot_gripper_closed(snapshot)
-            and lift_ok
-            and float(snapshot["ee_obj_dist"]) <= self._grasp_success_ee_obj_dist
-        )
-
-    def _score_grasp_snapshot(self, snapshot: dict) -> float:
-        is_closed = float(self._snapshot_gripper_closed(snapshot))
-        lift_height = max(0.0, float(snapshot["lift_height"]))
-        return (
-            2.0 * is_closed
-            - 4.0 * float(snapshot["ee_obj_dist"])
-            - 0.5 * float(snapshot["object_speed"])
-            - 4.0 * lift_height
-        )
-
-    def _sample_grasp_reset_snapshot(self) -> tuple[dict, str, int]:
-        self._ensure_grasp_policy_loaded()
-        grasp_env = self._grasp_env
-        grasp_policy = self._grasp_policy
-        assert grasp_env is not None
-        assert grasp_policy is not None
-
-        best_snapshot: dict | None = None
-        best_score = -np.inf
-
-        for attempt in range(1, self._grasp_attempts_per_reset + 1):
-            grasp_seed = int(self.np_random.integers(0, 2**31 - 1))
-            observation, _ = grasp_env.reset(seed=grasp_seed)
-            initial_obj_pos, _ = self._get_grasp_obj_pose()
-            consecutive_good_steps = 0
-
-            for _ in range(self._grasp_max_steps):
-                action, _ = grasp_policy.predict(
-                    observation,
-                    deterministic=self._grasp_deterministic,
-                )
-                observation, _reward, terminated, truncated, _info = grasp_env.step(
-                    action
-                )
-
-                snapshot = self._capture_grasp_snapshot(initial_obj_pos)
-                snapshot_score = self._score_grasp_snapshot(snapshot)
-                if snapshot_score > best_score:
-                    best_score = snapshot_score
-                    best_snapshot = snapshot
-
-                if self._is_good_grasp_snapshot(snapshot):
-                    consecutive_good_steps += 1
-                else:
-                    consecutive_good_steps = 0
-
-                if consecutive_good_steps >= self._grasp_success_hold_steps:
-                    return snapshot, "gripper_closed_success", attempt
-
-                if terminated or truncated:
-                    break
-
-        if best_snapshot is None or not self._allow_grasp_fallback_snapshot:
-            raise RuntimeError(
-                "Failed to obtain a closed-gripper state from the grasping policy. "
-                "Try increasing grasp_max_steps or grasp_attempts_per_reset."
+    def _sample_reset_grasp_quat(self, obj_quat: np.ndarray) -> np.ndarray:
+        base_rpy = _quat_to_euler_xyz(obj_quat)
+        if self._reset_orientation_noise_rad > 0.0:
+            noise = self.np_random.uniform(
+                -self._reset_orientation_noise_rad,
+                self._reset_orientation_noise_rad,
+                size=3,
             )
+            base_rpy = self._wrap_vector_to_pi(base_rpy + noise)
+        return _quat_from_euler_xyz(*base_rpy)
 
-        return (
-            best_snapshot,
-            "gripper_closed_fallback_best_snapshot",
-            self._grasp_attempts_per_reset,
+    def _sample_reset_grasp_pos(self, obj_pos: np.ndarray) -> np.ndarray:
+        obj_pos = np.asarray(obj_pos, dtype=np.float64).reshape(3)
+        if self._reset_position_noise > 0.0:
+            self.reset_grasp_position_noise = self.np_random.uniform(
+                -self._reset_position_noise,
+                self._reset_position_noise,
+                size=3,
+            ).astype(np.float64)
+        else:
+            self.reset_grasp_position_noise = np.zeros(3, dtype=np.float64)
+        return np.clip(
+            obj_pos + self.reset_grasp_position_noise,
+            self._ik_workspace_low,
+            self._ik_workspace_high,
         )
 
-    def _restore_grasp_snapshot(self, snapshot: dict) -> None:
+    def _set_active_obj_site_pose(
+        self,
+        site_world_pos: np.ndarray,
+        site_world_quat: np.ndarray,
+    ) -> None:
+        info = self._get_active_obj_info()
+        qpos = self.data.qpos.copy()
+        qvel = self.data.qvel.copy()
+        qposadr = int(info["qposadr"])
+        dofadr = int(info["dofadr"])
+        site_id = int(info["site_id"])
+        site_world_pos = np.asarray(site_world_pos, dtype=np.float64).reshape(3)
+        site_world_quat = _normalize_quat(
+            np.asarray(site_world_quat, dtype=np.float64).reshape(4)
+        )
+        site_local_pos = self.model.site_pos[site_id].copy()
+        body_pos = site_world_pos - self._quat_rotate_vector(
+            site_world_quat,
+            site_local_pos,
+        )
+
+        qpos[qposadr : qposadr + 3] = body_pos
+        qpos[qposadr + 3 : qposadr + 7] = site_world_quat
+        qvel[dofadr : dofadr + 6] = 0.0
+        self.set_state(qpos, qvel)
+        mujoco.mj_forward(self.model, self.data)
+
+    def _attach_active_object_to_gripper(self) -> None:
+        ee_pos, ee_quat = self._get_ee_pose()
+        obj_pos, obj_quat = self._get_active_obj_pose()
+        ee_quat_conj = self._quat_conjugate(ee_quat)
+        self.object_grasp_attached = True
+        self.grasp_latched = True
+        self.gripper_release_latched = False
+        self._grasp_site_offset_ee = self._quat_rotate_vector(
+            ee_quat_conj,
+            obj_pos - ee_pos,
+        )
+        self._grasp_relative_quat = _normalize_quat(
+            self._quat_multiply(ee_quat_conj, obj_quat)
+        )
+
+    def _sync_grasped_object_to_ee(self) -> None:
+        if not self.object_grasp_attached or self.gripper_release_latched:
+            return
+
+        ee_pos, ee_quat = self._get_ee_pose()
+        obj_site_pos = ee_pos + self._quat_rotate_vector(
+            ee_quat,
+            self._grasp_site_offset_ee,
+        )
+        obj_site_quat = _normalize_quat(
+            self._quat_multiply(ee_quat, self._grasp_relative_quat)
+        )
+        self._set_active_obj_site_pose(obj_site_pos, obj_site_quat)
+
+    def _apply_arm_qpos(self, arm_qpos: np.ndarray) -> None:
+        qpos = self.data.qpos.copy()
+        qvel = self.data.qvel.copy()
+        qpos[self._arm_qpos_indices] = np.asarray(arm_qpos, dtype=np.float64)
+        qvel[self._arm_dof_indices] = 0.0
+        self.set_state(qpos, qvel)
+
+    def _solve_reset_ik(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        *,
+        seed_offset: int,
+    ):
+        return self._ik_solver.solve(
+            target_pos,
+            target_quat,
+            initial_q=self._current_arm_joint_positions(),
+            position_only=self._ik_position_only,
+            max_iters=self._ik_max_iters,
+            position_tolerance=self._ik_position_tolerance,
+            rotation_tolerance=self._ik_rotation_tolerance_rad,
+            damping=self._ik_damping,
+            step_size=self._ik_step_size,
+            max_delta=self._ik_max_delta_rad,
+            rotation_weight=self._ik_rotation_weight,
+            random_restarts=max(2, self._ik_random_restarts),
+            seed=None if self._ik_seed is None else int(self._ik_seed + seed_offset),
+        )
+
+    def _solve_best_reset_ik(
+        self,
+        target_pos: np.ndarray,
+        preferred_quat: np.ndarray,
+        *,
+        seed_offset: int,
+    ):
+        candidate_quats = [
+            _normalize_quat(preferred_quat),
+            _normalize_quat(self._get_active_obj_pose()[1]),
+        ]
+        best_result = None
+        best_score = np.inf
+
+        for index, quat in enumerate(candidate_quats):
+            result = self._solve_reset_ik(
+                target_pos,
+                quat,
+                seed_offset=seed_offset + index,
+            )
+            score = float(
+                result.position_error_norm
+                + self._ik_rotation_weight * result.rotation_error_norm
+            )
+            if score < best_score:
+                best_score = score
+                best_result = result
+                self.reset_grasp_target_quat = quat.copy()
+            if result.success:
+                break
+
+        assert best_result is not None
+        return best_result
+
+    def _settle_with_ctrl(self, ctrl: np.ndarray, steps: int) -> None:
+        ctrl = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
+        for _ in range(max(0, int(steps))):
+            self.do_simulation(ctrl, self.frame_skip)
+
+    def _drive_arm_to_pose(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        *,
+        close_gripper: bool,
+        steps: int,
+        seed_offset: int,
+    ) -> bool:
+        ik_result = self._solve_reset_ik(
+            target_pos,
+            target_quat,
+            seed_offset=seed_offset,
+        )
+        self._last_ik_result = ik_result
+        if not ik_result.success:
+            self._ik_failure_count += 1
+
+        target_ctrl = self.data.ctrl.copy()
+        target_ctrl[self._arm_ctrl_indices] = ik_result.q_rad.copy()
+        if close_gripper:
+            self._set_closed_gripper_target(target_ctrl)
+        else:
+            self._set_open_gripper_target(target_ctrl)
+        target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
+
+        start_ctrl = self.data.ctrl.copy()
+        for step_idx in range(1, max(1, int(steps)) + 1):
+            alpha = step_idx / max(1, int(steps))
+            ctrl = (1.0 - alpha) * start_ctrl + alpha * target_ctrl
+            self.do_simulation(np.clip(ctrl, self._ctrl_low, self._ctrl_high), self.frame_skip)
+
+        self.data.ctrl[:] = target_ctrl
+        mujoco.mj_forward(self.model, self.data)
+        return bool(ik_result.success)
+
+    def _set_open_gripper_target(self, ctrl: np.ndarray) -> None:
+        self.gripper_state = "open"
+        ctrl[self.gripL_act_id] = self._gripper_open_target[0]
+        ctrl[self.gripR_act_id] = self._gripper_open_target[1]
+
+    def _set_closed_gripper_target(self, ctrl: np.ndarray) -> None:
+        self.gripper_state = "closed"
+        ctrl[self.gripL_act_id] = self._gripper_closed_target[0]
+        ctrl[self.gripR_act_id] = self._gripper_closed_target[1]
+
+    def _gripper_qpos_closed(self) -> bool:
+        qpos = self.data.qpos[[self.gripL_qadr, self.gripR_qadr]]
+        return bool(
+            qpos[0] <= -self._reset_qpos_close_threshold
+            and qpos[1] >= self._reset_qpos_close_threshold
+        )
+
+    def _reset_episode_state(self) -> None:
+        self.current_step = 0
+        self.success_counter = 0
+        self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
+        self.gripper_state = "closed"
+        self.gripper_release_latched = False
+        self.object_grasp_attached = False
+        self.last_gripper_should_open = False
+        self.last_release_target_dist = np.inf
+        self.last_release_target_angle = np.inf
+        self.grasp_latched = True
+        self.last_grasp_should_close = True
+        self.last_grasp_dist = np.inf
+        self.last_grasp_angle = np.inf
+        self._grasp_site_offset_ee = np.zeros(3, dtype=np.float64)
+        self._grasp_relative_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.reset_grasp_position_noise = np.zeros(3, dtype=np.float64)
+        self._reset_ik_state()
+
+    def _initialize_scene_for_reset(self) -> np.ndarray:
         qpos = self.init_qpos.copy()
         qvel = self.init_qvel.copy()
-        ctrl = np.asarray(snapshot["ctrl"], dtype=np.float64).copy()
-        if ctrl.shape != self.data.ctrl.shape:
-            raise ValueError(
-                "Transferred ctrl shape does not match InsertTargetEnvIK scene. "
-                f"Expected {self.data.ctrl.shape}, got {ctrl.shape}."
-            )
+        self.active_obj_name = str(self.np_random.choice(self.object_names))
+        obj_pos, obj_quat, yaw = self._sample_object_pose()
+        identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
-        self.active_obj_name = str(snapshot["active_object"])
+        for obj_name in self.object_names:
+            info = self.object_info[obj_name]
+            qposadr = int(info["qposadr"])
+            dofadr = int(info["dofadr"])
+            if obj_name == self.active_obj_name:
+                qpos[qposadr : qposadr + 3] = obj_pos
+                qpos[qposadr + 3 : qposadr + 7] = obj_quat
+            else:
+                qpos[qposadr : qposadr + 3] = np.array([6.0, 1.0, 1.0], dtype=np.float64)
+                qpos[qposadr + 3 : qposadr + 7] = identity_quat
+            qvel[dofadr : dofadr + 6] = 0.0
+
+        qpos[self.gripL_qadr] = self._gripper_open_target[0]
+        qpos[self.gripR_qadr] = self._gripper_open_target[1]
+        qvel[self.gripL_dadr] = 0.0
+        qvel[self.gripR_dadr] = 0.0
+        self.set_state(qpos, qvel)
+
+        (
+            self.sampled_target_place_site_pos,
+            self.sampled_target_place_site_quat,
+            self.sampled_target_place_pos,
+            self.sampled_target_place_quat,
+            self.sampled_target_place_yaw,
+        ) = self._sample_target_place_site_pose(obj_pos)
         self._set_place_poses_in_model(
             self.sampled_target_place_pos,
             self.sampled_target_place_quat,
         )
         self._set_active_place_visual()
+        mujoco.mj_forward(self.model, self.data)
+        self._sync_target_site_to_above_place()
 
-        grasp_env = self._grasp_env
-        assert grasp_env is not None
-        source_qpos = np.asarray(snapshot["qpos"], dtype=np.float64)
-        source_qvel = np.asarray(snapshot["qvel"], dtype=np.float64)
-        source_model = grasp_env.model
-        source_joint_map = self._joint_name_map(source_model)
-        target_joint_map = self._joint_name_map(self.model)
-        transfer_joint_names = sorted(
-            set(source_joint_map).intersection(target_joint_map)
-        )
-
-        for joint_name in transfer_joint_names:
-            source_joint_id = source_joint_map[joint_name]
-            target_joint_id = target_joint_map[joint_name]
-            source_qposadr = int(source_model.jnt_qposadr[source_joint_id])
-            source_dofadr = int(source_model.jnt_dofadr[source_joint_id])
-            target_qposadr = int(self.model.jnt_qposadr[target_joint_id])
-            target_dofadr = int(self.model.jnt_dofadr[target_joint_id])
-            qpos_size = self._joint_qpos_size(source_model, source_joint_id)
-            dof_size = self._joint_dof_size(source_model, source_joint_id)
-            target_qpos_size = self._joint_qpos_size(self.model, target_joint_id)
-            target_dof_size = self._joint_dof_size(self.model, target_joint_id)
-
-            if qpos_size != target_qpos_size or dof_size != target_dof_size:
-                raise ValueError(
-                    "Transferred joint shape mismatch for "
-                    f"`{joint_name}`: source qpos/dof=({qpos_size}, {dof_size}) "
-                    f"target=({target_qpos_size}, {target_dof_size})."
-                )
-
-            qpos[target_qposadr : target_qposadr + qpos_size] = source_qpos[
-                source_qposadr : source_qposadr + qpos_size
-            ]
-            qvel[target_dofadr : target_dofadr + dof_size] = source_qvel[
-                source_dofadr : source_dofadr + dof_size
-            ]
-
-        self.set_state(qpos, qvel)
-        self._set_closed_gripper_target(ctrl)
+        ctrl = self.data.ctrl.copy()
+        ctrl[self._arm_ctrl_indices] = qpos[self._arm_qpos_indices]
+        self._set_open_gripper_target(ctrl)
         self.data.ctrl[:] = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
-        self.gripper_state = "closed"
-        self._sync_target_site_to_release_pose()
         mujoco.mj_forward(self.model, self.data)
 
-        if self._grasp_transfer_settle_steps > 0:
-            settle_ctrl = self.data.ctrl.copy()
-            self._set_closed_gripper_target(settle_ctrl)
-            settle_ctrl = np.clip(settle_ctrl, self._ctrl_low, self._ctrl_high)
-            for _ in range(self._grasp_transfer_settle_steps):
-                self.do_simulation(settle_ctrl, 1)
+        self.initial_obj_site_pos = self._get_active_obj_pose()[0].copy()
+        self.sampled_object_yaw = float(yaw)
+        self.applied_object_yaw = float(
+            self._quat_to_yaw(self._get_active_obj_pose()[1])
+        )
+        self.applied_target_place_yaw = float(
+            self._quat_to_yaw(self._get_active_place_site_pose()[1])
+        )
+        return self.initial_obj_site_pos.copy()
+
+    def _run_procedural_grasp_reset(self, attempt_index: int) -> None:
+        obj_pos, obj_quat = self._get_active_obj_pose()
+        grasp_quat = self._sample_reset_grasp_quat(obj_quat)
+        self.reset_grasp_target_quat = grasp_quat.copy()
+
+        grasp_pos = self._sample_reset_grasp_pos(obj_pos)
+        grasp_result = self._solve_best_reset_ik(
+            grasp_pos,
+            grasp_quat,
+            seed_offset=attempt_index * 10,
+        )
+        self._last_ik_result = grasp_result
+        if not grasp_result.success:
+            self._ik_failure_count += 1
+
+        self._apply_arm_qpos(grasp_result.q_rad)
+        ctrl = self.data.ctrl.copy()
+        ctrl[self._arm_ctrl_indices] = grasp_result.q_rad
+        self._set_closed_gripper_target(ctrl)
+        self.data.ctrl[:] = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
+        mujoco.mj_forward(self.model, self.data)
+        self._attach_active_object_to_gripper()
 
         self._reset_ik_state()
+        self.sync_visual_frames()
 
-    def _get_inside_place_metrics(self) -> dict[str, np.ndarray | float | int]:
+    def _reset_acceptance_metrics(
+        self,
+        reset_start_obj_pos: np.ndarray,
+    ) -> tuple[bool, dict]:
+        ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
-        active_place_info = self._get_active_place_info()
-        place_body = self.data.body(str(active_place_info["body_name"]))
-        place_body_pos = place_body.xpos.copy()
-        place_body_quat = _normalize_quat(place_body.xquat.copy())
-        place_site_local_pos = self.model.site_pos[
-            int(active_place_info["site_id"])
-        ].copy()
-
-        obj_local_pos, obj_local_quat = self._get_pose_in_body_frame(
+        ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
+            ee_pos,
+            ee_quat,
             obj_pos,
             obj_quat,
-            place_body_pos,
-            place_body_quat,
         )
-        local_xy_error = obj_local_pos[:2] - place_site_local_pos[:2]
-        local_z_offset = float(obj_local_pos[2] - place_site_local_pos[2])
-
-        if self.active_obj_name == "box":
-            xy_inside = bool(
-                np.all(np.abs(local_xy_error) <= INSIDE_PLACE_BOX_HALF_EXTENTS)
-            )
-            xy_margin = float(
-                np.min(INSIDE_PLACE_BOX_HALF_EXTENTS - np.abs(local_xy_error))
-            )
-        elif self.active_obj_name == "triangle":
-            radial_error = float(np.linalg.norm(local_xy_error))
-            xy_inside = bool(radial_error <= INSIDE_PLACE_TRIANGLE_RADIUS)
-            xy_margin = float(INSIDE_PLACE_TRIANGLE_RADIUS - radial_error)
-        else:
-            radial_error = float(np.linalg.norm(local_xy_error))
-            xy_inside = bool(radial_error <= INSIDE_PLACE_CYLINDER_RADIUS)
-            xy_margin = float(INSIDE_PLACE_CYLINDER_RADIUS - radial_error)
-
-        z_inside = bool(
-            INSIDE_PLACE_Z_OFFSET_MIN <= local_z_offset <= INSIDE_PLACE_Z_OFFSET_MAX
+        ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
+        ee_obj_angle = float(np.linalg.norm(ee_obj_rot_error))
+        lift_height = float(obj_pos[2] - np.asarray(reset_start_obj_pos, dtype=np.float64)[2])
+        max_reset_angle = max(
+            np.deg2rad(10.0),
+            self._reset_orientation_noise_rad + self._ik_rotation_tolerance_rad,
         )
-        inside_place = bool(xy_inside and z_inside)
+        gripper_ctrl = self.data.ctrl[[self.gripL_act_id, self.gripR_act_id]]
+        gripper_command_closed = bool(
+            gripper_ctrl[0] < -self._grasp_ctrl_close_threshold
+            and gripper_ctrl[1] > self._grasp_ctrl_close_threshold
+        )
+        accepted = bool(
+            self.object_grasp_attached
+            and gripper_command_closed
+            and ee_obj_dist <= self._reset_accept_ee_obj_dist
+            and ee_obj_angle <= max_reset_angle
+            and lift_height >= self._reset_accept_min_lift
+        )
+        metrics = {
+            "ee_obj_dist": ee_obj_dist,
+            "ee_obj_angle": ee_obj_angle,
+            "lift_height": lift_height,
+            "max_reset_angle": float(max_reset_angle),
+            "gripper_qpos_closed": int(self._gripper_qpos_closed()),
+            "gripper_command_closed": int(gripper_command_closed),
+            "object_grasp_attached": int(self.object_grasp_attached),
+            "score": -ee_obj_dist
+            + 0.5 * float(gripper_command_closed)
+            + 0.5 * float(self.object_grasp_attached)
+            + lift_height,
+        }
+        return accepted, metrics
 
+    def _capture_reset_snapshot(self, metrics: dict, source: str, attempts: int) -> dict:
         return {
-            "object_local_pos": obj_local_pos,
-            "object_local_quat": obj_local_quat,
-            "place_site_local_pos": place_site_local_pos,
-            "inside_place_xy_error": local_xy_error,
-            "inside_place_z_offset": float(local_z_offset),
-            "inside_place_xy_margin": float(xy_margin),
-            "inside_place_xy_ok": int(xy_inside),
-            "inside_place_z_ok": int(z_inside),
-            "inside_place": int(inside_place),
+            "qpos": self.data.qpos.copy(),
+            "qvel": self.data.qvel.copy(),
+            "ctrl": self.data.ctrl.copy(),
+            "active_object": self.active_obj_name,
+            "sampled_target_place_site_pos": self.sampled_target_place_site_pos.copy(),
+            "sampled_target_place_site_quat": self.sampled_target_place_site_quat.copy(),
+            "sampled_target_place_pos": self.sampled_target_place_pos.copy(),
+            "sampled_target_place_quat": self.sampled_target_place_quat.copy(),
+            "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
+            "sampled_target_site_pos": self.sampled_target_site_pos.copy(),
+            "sampled_target_site_quat": self.sampled_target_site_quat.copy(),
+            "reset_grasp_target_quat": self.reset_grasp_target_quat.copy(),
+            "reset_grasp_position_noise": self.reset_grasp_position_noise.copy(),
+            "grasp_site_offset_ee": self._grasp_site_offset_ee.copy(),
+            "grasp_relative_quat": self._grasp_relative_quat.copy(),
+            "source": source,
+            "attempts": int(attempts),
+            "metrics": dict(metrics),
         }
 
-    def _get_release_target_alignment(self) -> tuple[float, float, bool]:
+    def _restore_reset_snapshot(self, snapshot: dict) -> None:
+        self.active_obj_name = str(snapshot["active_object"])
+        self.sampled_target_place_site_pos = np.asarray(
+            snapshot["sampled_target_place_site_pos"],
+            dtype=np.float64,
+        ).copy()
+        self.sampled_target_place_site_quat = _normalize_quat(
+            np.asarray(snapshot["sampled_target_place_site_quat"], dtype=np.float64)
+        )
+        self.sampled_target_place_pos = np.asarray(
+            snapshot["sampled_target_place_pos"],
+            dtype=np.float64,
+        ).copy()
+        self.sampled_target_place_quat = _normalize_quat(
+            np.asarray(snapshot["sampled_target_place_quat"], dtype=np.float64)
+        )
+        self.sampled_target_place_yaw = float(snapshot["sampled_target_place_yaw"])
+        self.sampled_target_site_pos = np.asarray(
+            snapshot["sampled_target_site_pos"],
+            dtype=np.float64,
+        ).copy()
+        self.sampled_target_site_quat = _normalize_quat(
+            np.asarray(snapshot["sampled_target_site_quat"], dtype=np.float64)
+        )
+        self.reset_grasp_target_quat = _normalize_quat(
+            np.asarray(snapshot["reset_grasp_target_quat"], dtype=np.float64)
+        )
+        self.reset_grasp_position_noise = np.asarray(
+            snapshot.get("reset_grasp_position_noise", np.zeros(3, dtype=np.float64)),
+            dtype=np.float64,
+        ).copy()
+        self._grasp_site_offset_ee = np.asarray(
+            snapshot.get("grasp_site_offset_ee", np.zeros(3, dtype=np.float64)),
+            dtype=np.float64,
+        ).copy()
+        self._grasp_relative_quat = _normalize_quat(
+            np.asarray(
+                snapshot.get(
+                    "grasp_relative_quat",
+                    np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+                ),
+                dtype=np.float64,
+            )
+        )
+        self._set_place_poses_in_model(
+            self.sampled_target_place_pos,
+            self.sampled_target_place_quat,
+        )
+        self._set_active_place_visual()
+        self._set_target_site_pose_in_model(
+            self.sampled_target_site_pos,
+            self.sampled_target_site_quat,
+        )
+        self.set_state(
+            np.asarray(snapshot["qpos"], dtype=np.float64),
+            np.asarray(snapshot["qvel"], dtype=np.float64),
+        )
+        self.data.ctrl[:] = np.clip(
+            np.asarray(snapshot["ctrl"], dtype=np.float64),
+            self._ctrl_low,
+            self._ctrl_high,
+        )
+        mujoco.mj_forward(self.model, self.data)
+        self.gripper_state = "closed"
+        self.grasp_latched = True
+        self.gripper_release_latched = False
+        self.object_grasp_attached = True
+        self.initial_obj_site_pos = self._get_active_obj_pose()[0].copy()
+        self.applied_object_yaw = float(
+            self._quat_to_yaw(self._get_active_obj_pose()[1])
+        )
+        self.applied_target_place_yaw = float(
+            self._quat_to_yaw(self._get_active_place_site_pose()[1])
+        )
+        metrics = dict(snapshot["metrics"])
+        self.last_reset_source = str(snapshot["source"])
+        self.last_reset_attempts = int(snapshot["attempts"])
+        self.last_reset_lift_height = float(metrics.get("lift_height", 0.0))
+        self.last_reset_ee_obj_dist = float(metrics.get("ee_obj_dist", np.inf))
+        self._reset_ik_state()
+        self.sync_visual_frames()
+
+    def reset_model(self):
+        if not getattr(self, "_insert_env_ready", False):
+            return super().reset_model()
+
+        self._reset_episode_state()
+        best_snapshot = None
+        best_score = -np.inf
+
+        for attempt in range(1, self._reset_attempts + 1):
+            reset_start_obj_pos = self._initialize_scene_for_reset()
+            self._run_procedural_grasp_reset(attempt)
+            accepted, metrics = self._reset_acceptance_metrics(reset_start_obj_pos)
+            score = float(metrics["score"])
+            if score > best_score:
+                best_score = score
+                best_snapshot = self._capture_reset_snapshot(
+                    metrics,
+                    "ik_fallback_best_grasp_snapshot",
+                    attempt,
+                )
+            if accepted:
+                snapshot = self._capture_reset_snapshot(metrics, "ik_grasp_success", attempt)
+                self._restore_reset_snapshot(snapshot)
+                return self._get_obs()
+
+        fallback_metrics = {} if best_snapshot is None else dict(best_snapshot["metrics"])
+        fallback_grasped = bool(
+            fallback_metrics.get("object_grasp_attached", 0)
+            and fallback_metrics.get("gripper_command_closed", 0)
+            and float(fallback_metrics.get("ee_obj_dist", np.inf))
+            <= self._reset_accept_ee_obj_dist
+        )
+        if (
+            best_snapshot is not None
+            and self._allow_reset_fallback_snapshot
+            and fallback_grasped
+        ):
+            self._restore_reset_snapshot(best_snapshot)
+            return self._get_obs()
+
+        raise RuntimeError(
+            "InsertTargetEnvIK failed to create a grasped reset state with IK. "
+            "Increase reset_attempts/reset_close_steps or loosen reset_accept_* thresholds."
+        )
+
+    def _get_target_pose_alignment(self) -> tuple[float, float, bool]:
         obj_pos, obj_quat = self._get_active_obj_pose()
         target_pos, target_quat = self._get_target_pose()
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
@@ -875,57 +980,60 @@ class InsertTargetEnvIK(GraspingEnvIK):
         )
         target_dist = float(np.linalg.norm(obj_target_pos_error))
         target_angle = float(np.linalg.norm(obj_target_rot_error))
-        release_pose_aligned = bool(
-            target_dist <= self._gripper_release_distance
-            and target_angle <= self._gripper_release_angle_rad
-        )
-        return target_dist, target_angle, release_pose_aligned
+        target_close = bool(target_dist < self._success_distance)
+        return target_dist, target_angle, target_close
 
-    def _apply_insert_gripper_heuristic(self, ctrl: np.ndarray) -> None:
-        target_dist, target_angle, release_pose_aligned = (
-            self._get_release_target_alignment()
-        )
-
-        self.gripper_release_latched = bool(
-            self.gripper_release_latched or release_pose_aligned
-        )
-        self.last_gripper_should_release = bool(release_pose_aligned)
+    def _apply_manual_release_if_ready(self) -> None:
+        target_dist, target_angle, _ = self._get_target_pose_alignment()
+        should_open = bool(target_dist <= self._gripper_open_distance)
+        self.last_gripper_should_open = should_open
         self.last_release_target_dist = target_dist
         self.last_release_target_angle = target_angle
+        if not should_open:
+            return
 
-        if self.gripper_release_latched:
-            self._set_open_gripper_target(ctrl)
-        else:
-            self._set_closed_gripper_target(ctrl)
+        self.gripper_release_latched = True
+        self.object_grasp_attached = False
+        open_ctrl = self.data.ctrl.copy()
+        self._set_open_gripper_target(open_ctrl)
+        self.data.ctrl[:] = np.clip(open_ctrl, self._ctrl_low, self._ctrl_high)
+        self._settle_with_ctrl(self.data.ctrl.copy(), self._release_open_steps)
+        mujoco.mj_forward(self.model, self.data)
 
     def step(self, action):
         self.current_step += 1
-        self._sync_target_site_to_release_pose()
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
-        self._apply_insert_gripper_heuristic(target_ctrl)
+        if self.gripper_release_latched:
+            self._set_open_gripper_target(target_ctrl)
+        else:
+            self._set_closed_gripper_target(target_ctrl)
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
 
         start_ctrl = self.data.ctrl.copy()
         for interp_idx in range(1, self._control_interpolation_steps + 1):
             alpha = interp_idx / self._control_interpolation_steps
             smooth_ctrl = (1.0 - alpha) * start_ctrl + alpha * target_ctrl
-            smooth_ctrl = np.clip(smooth_ctrl, self._ctrl_low, self._ctrl_high)
-            self.do_simulation(smooth_ctrl, self.frame_skip)
+            self.do_simulation(np.clip(smooth_ctrl, self._ctrl_low, self._ctrl_high), self.frame_skip)
 
-        self._sync_target_site_to_release_pose()
+        if not self.gripper_release_latched:
+            self._sync_grasped_object_to_ee()
         self.sync_visual_frames()
+        if not self.gripper_release_latched:
+            self._apply_manual_release_if_ready()
+            self.sync_visual_frames()
+
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
-        terminated_success = self.success_counter >= self._success_steps_required
         terminated_ee_obj_far = bool(
             not self.gripper_release_latched
-            and float(reward_info["ee_object_dist"]) >= self._terminate_ee_obj_distance
+            and reward_info["ee_object_dist"] >= self._terminate_ee_obj_distance
+            and reward_info["object_target_dist"] >= self._success_distance
         )
-        terminated = terminated_success or terminated_ee_obj_far
+        terminated = terminated_ee_obj_far
         truncated = self.current_step >= self.max_episode_steps
-        reward_info.update(
-            terminated_success=int(terminated_success),
-            terminated_ee_obj_far=int(terminated_ee_obj_far),
+        reward_info["terminated_ee_obj_far"] = int(terminated_ee_obj_far)
+        reward_info["terminated_success"] = int(
+            self.success_counter >= self._success_steps_required
         )
 
         if self.render_mode == "human":
@@ -934,9 +1042,10 @@ class InsertTargetEnvIK(GraspingEnvIK):
         return observation, reward, terminated, truncated, reward_info
 
     def _get_rew(self, action: np.ndarray) -> tuple[float, dict]:
-        obj_pos, obj_quat = self._get_active_obj_pose()
         ee_pos, ee_quat = self._get_ee_pose()
+        obj_pos, obj_quat = self._get_active_obj_pose()
         target_pos, target_quat = self._get_target_pose()
+
         ee_obj_pos_error, _ = self._get_pose_error(ee_pos, ee_quat, obj_pos, obj_quat)
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos,
@@ -947,81 +1056,66 @@ class InsertTargetEnvIK(GraspingEnvIK):
         ee_obj_dist = float(np.linalg.norm(ee_obj_pos_error))
         target_dist = float(np.linalg.norm(obj_target_pos_error))
         target_angle = float(np.linalg.norm(obj_target_rot_error))
-        inside_place_metrics = self._get_inside_place_metrics()
-        inside_place = bool(inside_place_metrics["inside_place"])
-        self.last_inside_place = inside_place
-        self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
+        target_close = bool(target_dist < self._success_distance)
 
-        reward_target = 0.0
-        reward_target_tanh = 0.0
-        reward_orientation = 0.0
-        control_penalty = 0.0
-        if not self.gripper_release_latched:
-            reward_target = -target_dist * self._reward_target_weight
-            reward_target_tanh = (
-                1.0 - float(np.tanh(target_dist / self._distance_tanh_scale))
-            ) * self._reward_target_tanh_weight
-            reward_orientation = -target_angle * self._reward_orientation_weight
-            control_penalty = -self._control_penalty_weight * float(
-                np.sum(np.square(action))
+        reward_target = -target_dist * self._reward_target_weight
+        reward_target_tanh = (
+            1.0 - float(np.tanh(target_dist / self._distance_tanh_scale))
+        ) * self._reward_target_tanh_weight
+        reward_orientation = -target_angle * self._reward_orientation_weight
+        reward_orientation_tanh = (
+            1.0 - float(np.tanh(target_angle / self._orientation_tanh_scale))
+        ) * self._reward_orientation_tanh_weight
+        control_penalty = -self._control_penalty_weight * float(np.sum(np.square(action)))
+        reward_bonus = self._reward_bonus if target_close else 0.0
+
+        dense_reward_active = not self.gripper_release_latched
+        if dense_reward_active:
+            reward = (
+                reward_target
+                + reward_target_tanh
+                + reward_orientation
+                + reward_orientation_tanh
+                + control_penalty
+                + reward_bonus
             )
+        else:
+            reward_target = 0.0
+            reward_target_tanh = 0.0
+            reward_orientation = 0.0
+            reward_orientation_tanh = 0.0
+            control_penalty = 0.0
+            reward = reward_bonus
 
-        reward_inside_place_bonus = (
-            self._reward_inside_place_bonus
-            if self.gripper_release_latched and inside_place
-            else 0.0
-        )
-
-        if self.gripper_release_latched and inside_place:
+        if self.gripper_release_latched and target_close:
             self.success_counter += 1
         else:
             self.success_counter = 0
-
-        reward = (
-            reward_target
-            + reward_target_tanh
-            + reward_orientation
-            + reward_inside_place_bonus
-            + control_penalty
-        )
 
         reward_info = {
             "active_object": self.active_obj_name,
             "ee_object_dist": ee_obj_dist,
             "object_target_dist": target_dist,
-            "object_target_angle_rad": target_angle,
+            "object_target_rot_error": target_angle,
             "release_target_dist": target_dist,
             "release_target_angle_rad": target_angle,
-            "release_target_height_above_place": float(
-                self._target_height_above_place
-            ),
-            "release_pose_aligned": int(
-                target_dist <= self._gripper_release_distance
-                and target_angle <= self._gripper_release_angle_rad
-            ),
-            "gripper_release_latched": int(self.gripper_release_latched),
-            "gripper_should_release": int(self.last_gripper_should_release),
+            "target_height_above_place": float(self._target_height_above_place),
+            "dense_reward_active": int(dense_reward_active),
             "reward_target": float(reward_target),
             "reward_target_tanh": float(reward_target_tanh),
+            "reward_dist": float(reward_target),
+            "reward_dist_tanh": float(reward_target_tanh),
             "reward_orientation": float(reward_orientation),
-            "reward_inside_place_bonus": float(reward_inside_place_bonus),
-            "reward_bonus": float(reward_inside_place_bonus),
+            "reward_orientation_tanh": float(reward_orientation_tanh),
+            "reward_orient": float(reward_orientation),
+            "reward_orient_tanh": float(reward_orientation_tanh),
+            "reward_bonus": float(reward_bonus),
             "control_penalty": float(control_penalty),
-            "inside_place": int(inside_place),
-            "inside_place_xy_ok": int(inside_place_metrics["inside_place_xy_ok"]),
-            "inside_place_z_ok": int(inside_place_metrics["inside_place_z_ok"]),
-            "inside_place_x_error": float(
-                np.asarray(inside_place_metrics["inside_place_xy_error"])[0]
-            ),
-            "inside_place_y_error": float(
-                np.asarray(inside_place_metrics["inside_place_xy_error"])[1]
-            ),
-            "inside_place_z_offset": float(
-                inside_place_metrics["inside_place_z_offset"]
-            ),
-            "inside_place_xy_margin": float(
-                inside_place_metrics["inside_place_xy_margin"]
-            ),
+            "target_pose_aligned": int(target_close),
+            "gripper_open": int(self.gripper_state == "open"),
+            "gripper_release_latched": int(self.gripper_release_latched),
+            "gripper_should_open": int(self.last_gripper_should_open),
+            "object_grasp_attached": int(self.object_grasp_attached),
             "success_counter": int(self.success_counter),
             "ik_success": (
                 None
@@ -1031,96 +1125,6 @@ class InsertTargetEnvIK(GraspingEnvIK):
             "ik_failure_count": int(self._ik_failure_count),
         }
         return float(reward), reward_info
-
-    def _reset_insert_episode_state(self) -> None:
-        self.current_step = 0
-        self.success_counter = 0
-        self.last_action = np.zeros(self.action_space.shape, dtype=np.float32)
-        self.gripper_state = "closed"
-        self.gripper_release_latched = False
-        self.last_gripper_should_release = False
-        self.last_release_target_dist = np.inf
-        self.last_release_target_angle = np.inf
-        self.last_inside_place = False
-        self.initial_object_target_dist = np.inf
-        self.best_object_target_dist = np.inf
-
-    def _initialize_from_grasp_snapshot(
-        self,
-        snapshot: dict,
-        *,
-        reset_source: str,
-        attempt_count: int,
-    ) -> np.ndarray:
-        self._reset_insert_episode_state()
-        self.active_obj_name = str(snapshot["active_object"])
-
-        (
-            self.sampled_target_place_site_pos,
-            self.sampled_target_place_site_quat,
-            self.sampled_target_place_pos,
-            self.sampled_target_place_quat,
-            self.sampled_target_place_yaw,
-        ) = self._sample_target_place_pose(np.asarray(snapshot["obj_pos"]))
-
-        self._restore_grasp_snapshot(snapshot)
-        self._sync_target_site_to_release_pose()
-
-        self.sampled_target_site_pos, self.sampled_target_site_quat = (
-            self._get_target_pose()
-        )
-        self.sampled_object_yaw = float(
-            self._quat_to_yaw(np.asarray(snapshot["obj_quat"], dtype=np.float64))
-        )
-        self.applied_object_yaw = float(
-            self._quat_to_yaw(self._get_active_obj_pose()[1])
-        )
-        target_place_body_quat = _normalize_quat(
-            self.data.body(
-                str(self._get_active_place_info()["body_name"])
-            ).xquat.copy()
-        )
-        self.applied_target_place_yaw = float(self._quat_to_yaw(target_place_body_quat))
-        self.initial_obj_site_pos = self._get_active_obj_pose()[0].copy()
-        target_dist, target_angle, _ = self._get_release_target_alignment()
-        self.initial_object_target_dist = target_dist
-        self.best_object_target_dist = target_dist
-        self.last_release_target_dist = target_dist
-        self.last_release_target_angle = target_angle
-        self._last_grasp_reset_attempts = int(attempt_count)
-        self._last_grasp_init_lift_height = float(snapshot["lift_height"])
-        self._last_grasp_init_ee_obj_dist = float(snapshot["ee_obj_dist"])
-        self._last_grasp_reset_source = str(reset_source)
-        self._reset_ik_state()
-        self.sync_visual_frames()
-        return self._get_obs()
-
-    def reset_from_grasp_snapshot(
-        self,
-        snapshot: dict,
-        *,
-        seed: int | None = None,
-        reset_source: str = "external_gripper_closed_snapshot",
-        attempt_count: int = 1,
-    ) -> np.ndarray:
-        if seed is not None:
-            self.np_random, _ = seeding.np_random(seed)
-        return self._initialize_from_grasp_snapshot(
-            snapshot,
-            reset_source=reset_source,
-            attempt_count=attempt_count,
-        )
-
-    def reset_model(self):
-        if not getattr(self, "_insert_env_ready", False):
-            return super().reset_model()
-
-        snapshot, reset_source, attempt_count = self._sample_grasp_reset_snapshot()
-        return self._initialize_from_grasp_snapshot(
-            snapshot,
-            reset_source=reset_source,
-            attempt_count=attempt_count,
-        )
 
     def _get_obs_components(self) -> list[tuple[str, np.ndarray]]:
         if not getattr(self, "_insert_env_ready", False):
@@ -1140,41 +1144,42 @@ class InsertTargetEnvIK(GraspingEnvIK):
         gripper_qvel = qvel[[self.gripL_dadr, self.gripR_dadr]].copy()
         gripper_ctrl = self.data.ctrl[[self.gripL_act_id, self.gripR_act_id]].copy()
         gripper_closed = np.array(
-            [1.0 if self.gripper_state == "closed" else 0.0], dtype=np.float64
+            [1.0 if self.gripper_state == "closed" else 0.0],
+            dtype=np.float64,
         )
         release_latched = np.array(
-            [1.0 if self.gripper_release_latched else 0.0], dtype=np.float64
+            [1.0 if self.gripper_release_latched else 0.0],
+            dtype=np.float64,
         )
 
         ee_pos, ee_quat = self._get_ee_pose()
         obj_pos, obj_quat = self._get_active_obj_pose()
         target_pos, target_quat = self._get_target_pose()
         place_site_pos, place_site_quat = self._get_active_place_site_pose()
-        place_body = self.data.body(str(self._get_active_place_info()["body_name"]))
-        place_body_pos = place_body.xpos.copy()
-        place_body_quat = _normalize_quat(place_body.xquat.copy())
-
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos,
             obj_quat,
             target_pos,
             target_quat,
         )
+        ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
+            ee_pos,
+            ee_quat,
+            obj_pos,
+            obj_quat,
+        )
         target_delta_euler = self._wrap_vector_to_pi(
             _quat_to_euler_xyz(target_quat) - _quat_to_euler_xyz(obj_quat)
         )
-        target_dist = float(np.linalg.norm(obj_target_pos_error))
-        target_angle = float(np.linalg.norm(obj_target_rot_error))
-        inside_place_metrics = self._get_inside_place_metrics()
-
         metrics = np.array(
             [
-                target_dist,
-                target_angle,
+                np.linalg.norm(obj_target_pos_error),
+                np.linalg.norm(obj_target_rot_error),
+                np.linalg.norm(ee_obj_pos_error),
+                np.linalg.norm(ee_obj_rot_error),
                 float(self.success_counter),
                 float(self._ik_failure_count),
                 float(self.gripper_release_latched),
-                float(inside_place_metrics["inside_place"]),
                 float(self._target_height_above_place),
             ],
             dtype=np.float64,
@@ -1193,14 +1198,14 @@ class InsertTargetEnvIK(GraspingEnvIK):
             ("ee_quat", ee_quat),
             ("object_pos", obj_pos),
             ("object_quat", obj_quat),
-            ("release_target_pos", target_pos),
-            ("release_target_quat", target_quat),
+            ("target_pos", target_pos),
+            ("target_quat", target_quat),
             ("place_site_pos", place_site_pos),
             ("place_site_quat", place_site_quat),
-            ("place_body_pos", place_body_pos),
-            ("place_body_quat", place_body_quat),
-            ("object_release_pos_error", obj_target_pos_error),
-            ("object_release_rot_error", obj_target_rot_error),
+            ("object_target_pos_error", obj_target_pos_error),
+            ("object_target_rot_error", obj_target_rot_error),
+            ("ee_object_pos_error", ee_obj_pos_error),
+            ("ee_object_rot_error", ee_obj_rot_error),
             ("target_delta_euler", target_delta_euler),
             ("ik_target_pos", self._ik_target_pos),
             ("ik_target_quat", self._ik_target_quat),
@@ -1221,93 +1226,22 @@ class InsertTargetEnvIK(GraspingEnvIK):
         config = export_env_config(self, self._get_obs_components())
         config["action"]["controller"] = "standalone_cartesian_ik"
         config["action"]["action_components"] = list(self.ACTION_COMPONENTS)
-        config["action"]["cartesian_action_scale_m"] = float(
-            self._cartesian_action_scale
-        )
-        config["action"]["cartesian_rotation_scale_deg"] = float(
-            np.rad2deg(self._cartesian_rotation_scale_rad)
-        )
-        config["action"]["ik_workspace_low"] = self._ik_workspace_low.tolist()
-        config["action"]["ik_workspace_high"] = self._ik_workspace_high.tolist()
-        config["action"]["ik_position_only"] = bool(self._ik_position_only)
-        config["action"]["ik_max_iters"] = int(self._ik_max_iters)
-        config["action"]["ik_position_tolerance"] = float(self._ik_position_tolerance)
-        config["action"]["ik_rotation_tolerance_deg"] = float(
-            np.rad2deg(self._ik_rotation_tolerance_rad)
-        )
-        config["action"]["ik_damping"] = float(self._ik_damping)
-        config["action"]["ik_step_size"] = float(self._ik_step_size)
-        config["action"]["ik_max_delta_deg"] = float(np.rad2deg(self._ik_max_delta_rad))
-        config["action"]["ik_rotation_weight"] = float(self._ik_rotation_weight)
-        config["action"]["ik_random_restarts"] = int(self._ik_random_restarts)
-        config["action"]["ik_seed"] = self._ik_seed
-        config["action"]["control_interpolation_steps"] = int(
-            self._control_interpolation_steps
-        )
-        config["action"]["max_joint_ctrl_delta_deg"] = float(
-            np.rad2deg(self._max_joint_ctrl_delta_rad)
-        )
-        config["action"]["smooth_cartesian_target"] = bool(
-            self._smooth_cartesian_target
-        )
-        config["action"]["ik_joint_names"] = list(self._ik_solver.joint_names)
-        config["action"]["ee_site_name"] = self.ee_site_name
-        config["action"]["gripper_policy"] = "release_above_place_heuristic"
-        config["action"]["gripper_release_distance"] = float(
-            self._gripper_release_distance
-        )
-        config["action"]["gripper_release_angle_deg"] = float(
-            np.rad2deg(self._gripper_release_angle_rad)
-        )
-        config["action"]["gripper_open_target"] = [0.01, -0.01]
-        config["action"]["gripper_closed_target"] = [-0.02, 0.02]
-        config["task"]["target_mode"] = "release_target_5cm_above_active_place"
+        config["action"]["gripper_policy"] = "manual_open_at_above_target"
+        config["action"]["gripper_open_distance"] = float(self._gripper_open_distance)
+        config["action"]["gripper_open_target"] = self._gripper_open_target.tolist()
+        config["action"]["gripper_closed_target"] = self._gripper_closed_target.tolist()
+        config["task"]["target_mode"] = "active_place_site_plus_3cm"
         config["task"]["target_height_above_place"] = float(
             self._target_height_above_place
         )
-        config["task"]["reward_phase_before_release"] = (
-            "object_distance_to_release_target"
+        config["task"]["reset_mode"] = "procedural_ik_follows_sampled_object_pose"
+        config["task"]["reset_position_noise_m"] = float(
+            self._reset_position_noise
         )
-        config["task"]["reward_phase_after_release"] = "inside_place_bonus_only"
-        config["task"]["target_place_body_names"] = {
-            obj_name: str(info["body_name"])
-            for obj_name, info in self.place_info.items()
-        }
-        config["task"]["target_place_site_names"] = {
-            obj_name: str(info["site_name"])
-            for obj_name, info in self.place_info.items()
-        }
-        config["task"]["target_place_randomization"] = {
-            "target_x_range": list(self._target_x_range),
-            "target_y_range": list(self._target_y_range),
-            "target_place_z": float(self._target_place_z),
-            "target_place_yaw_range": list(self._target_place_yaw_range),
-            "target_min_object_xy_distance": float(
-                self._target_min_object_xy_distance
-            ),
-        }
-        config["task"]["grasp_policy_reset"] = {
-            "grasp_env_name": self._grasp_env_name,
-            "grasp_model_path": str(self._grasp_model_path),
-            "grasp_xml_file": str(self._grasp_xml_path),
-            "grasp_max_steps": int(self._grasp_max_steps),
-            "grasp_attempts_per_reset": int(self._grasp_attempts_per_reset),
-            "grasp_success_condition": "actual_gripper_qpos_closed_without_lift",
-            "grasp_success_max_lift": self._grasp_success_max_lift,
-            "grasp_success_ee_obj_dist": float(self._grasp_success_ee_obj_dist),
-            "grasp_success_hold_steps": int(self._grasp_success_hold_steps),
-            "grasp_ctrl_close_threshold": float(self._grasp_ctrl_close_threshold),
-            "grasp_qpos_close_threshold": float(self._grasp_qpos_close_threshold),
-        }
-        config["task"]["inside_place_bonus_criterion"] = {
-            "box_half_extents_xy": INSIDE_PLACE_BOX_HALF_EXTENTS.astype(
-                np.float64
-            ).tolist(),
-            "triangle_radius_xy": float(INSIDE_PLACE_TRIANGLE_RADIUS),
-            "cylinder_radius_xy": float(INSIDE_PLACE_CYLINDER_RADIUS),
-            "z_offset_min": float(INSIDE_PLACE_Z_OFFSET_MIN),
-            "z_offset_max": float(INSIDE_PLACE_Z_OFFSET_MAX),
-        }
+        config["task"]["reset_orientation_noise_deg"] = float(
+            np.rad2deg(self._reset_orientation_noise_rad)
+        )
+        config["task"]["reward_after_release"] = "bonus_only_when_distance_below_success_distance"
         return config
 
     def get_debug_state(self) -> dict:
@@ -1315,8 +1249,6 @@ class InsertTargetEnvIK(GraspingEnvIK):
         obj_pos, obj_quat = self._get_active_obj_pose()
         target_pos, target_quat = self._get_target_pose()
         place_site_pos, place_site_quat = self._get_active_place_site_pose()
-        place_body = self.data.body(str(self._get_active_place_info()["body_name"]))
-        place_body_quat = _normalize_quat(place_body.xquat.copy())
         ee_obj_pos_error, ee_obj_rot_error = self._get_pose_error(
             ee_pos,
             ee_quat,
@@ -1329,8 +1261,6 @@ class InsertTargetEnvIK(GraspingEnvIK):
             target_pos,
             target_quat,
         )
-        inside_place_metrics = self._get_inside_place_metrics()
-
         return {
             "active_object": self.active_obj_name,
             "ee_pos": ee_pos,
@@ -1339,10 +1269,13 @@ class InsertTargetEnvIK(GraspingEnvIK):
             "obj_quat": obj_quat,
             "target_pos": target_pos,
             "target_quat": target_quat,
-            "target_place_pos": place_body.xpos.copy(),
-            "target_place_quat": place_body_quat,
             "place_site_pos": place_site_pos,
             "place_site_quat": place_site_quat,
+            "sampled_target_site_pos": self.sampled_target_site_pos.copy(),
+            "sampled_target_place_pos": self.sampled_target_place_pos.copy(),
+            "sampled_target_place_site_pos": self.sampled_target_place_site_pos.copy(),
+            "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
+            "applied_target_place_yaw": float(self.applied_target_place_yaw),
             "ee_obj_pos_error": ee_obj_pos_error,
             "ee_obj_rot_error": ee_obj_rot_error,
             "ee_obj_dist": float(np.linalg.norm(ee_obj_pos_error)),
@@ -1354,60 +1287,35 @@ class InsertTargetEnvIK(GraspingEnvIK):
             "object_target_dist": float(np.linalg.norm(obj_target_pos_error)),
             "release_target_dist": float(np.linalg.norm(obj_target_pos_error)),
             "release_target_angle_rad": float(np.linalg.norm(obj_target_rot_error)),
-            "release_target_height_above_place": float(
-                self._target_height_above_place
-            ),
-            "release_distance_threshold": float(self._gripper_release_distance),
-            "release_angle_threshold_deg": float(
-                np.rad2deg(self._gripper_release_angle_rad)
-            ),
+            "target_height_above_place": float(self._target_height_above_place),
+            "success_distance": float(self._success_distance),
             "gripper_state": self.gripper_state,
-            "gripper_qpos": self.data.qpos[
-                [self.gripL_qadr, self.gripR_qadr]
-            ].copy(),
-            "gripper_qvel": self.data.qvel[
-                [self.gripL_dadr, self.gripR_dadr]
-            ].copy(),
+            "gripper_release_latched": bool(self.gripper_release_latched),
+            "gripper_should_open": bool(self.last_gripper_should_open),
+            "object_grasp_attached": bool(self.object_grasp_attached),
+            "gripper_qpos": self.data.qpos[[self.gripL_qadr, self.gripR_qadr]].copy(),
             "gripper_ctrl": self.data.ctrl[
                 [self.gripL_act_id, self.gripR_act_id]
             ].copy(),
-            "gripper_qpos_close_threshold": float(self._grasp_qpos_close_threshold),
-            "gripper_release_latched": bool(self.gripper_release_latched),
-            "gripper_should_release": bool(self.last_gripper_should_release),
-            "inside_place": bool(inside_place_metrics["inside_place"]),
-            "inside_place_xy_ok": bool(inside_place_metrics["inside_place_xy_ok"]),
-            "inside_place_z_ok": bool(inside_place_metrics["inside_place_z_ok"]),
-            "inside_place_xy_error": np.asarray(
-                inside_place_metrics["inside_place_xy_error"], dtype=np.float64
+            "reset_source": self.last_reset_source,
+            "reset_attempts": int(self.last_reset_attempts),
+            "reset_lift_height": float(self.last_reset_lift_height),
+            "reset_ee_obj_dist": float(self.last_reset_ee_obj_dist),
+            "reset_position_noise_m": float(self._reset_position_noise),
+            "reset_grasp_position_noise": self.reset_grasp_position_noise.copy(),
+            "reset_grasp_target_quat": self.reset_grasp_target_quat.copy(),
+            "grasp_site_offset_ee": self._grasp_site_offset_ee.copy(),
+            "grasp_relative_quat": self._grasp_relative_quat.copy(),
+            "reset_orientation_noise_deg": float(
+                np.rad2deg(self._reset_orientation_noise_rad)
             ),
-            "inside_place_z_offset": float(
-                inside_place_metrics["inside_place_z_offset"]
-            ),
-            "inside_place_xy_margin": float(
-                inside_place_metrics["inside_place_xy_margin"]
-            ),
-            "sampled_target_site_pos": self.sampled_target_site_pos.copy(),
-            "sampled_target_place_site_pos": self.sampled_target_place_site_pos.copy(),
-            "sampled_target_place_pos": self.sampled_target_place_pos.copy(),
-            "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
-            "applied_target_place_yaw": float(self.applied_target_place_yaw),
-            "sampled_object_yaw": float(self.sampled_object_yaw),
-            "applied_object_yaw": float(self.applied_object_yaw),
             "success_counter": int(self.success_counter),
-            "initial_object_target_dist": float(self.initial_object_target_dist),
-            "best_object_target_dist": float(self.best_object_target_dist),
-            "grasp_reset_attempts": int(self._last_grasp_reset_attempts),
-            "grasp_init_lift_height": float(self._last_grasp_init_lift_height),
-            "grasp_init_ee_obj_dist": float(self._last_grasp_init_ee_obj_dist),
-            "grasp_reset_source": self._last_grasp_reset_source,
+            "dense_reward_active": bool(not self.gripper_release_latched),
             "last_action": self.last_action.copy(),
-            "task_mode": "ik_insert_release_above_place_then_inside_bonus",
+            "task_mode": "ik_insert_grasped_reset_release_above_target_3cm",
             **self._get_ik_debug_state(),
         }
 
-    def close(self):
-        if self._grasp_env is not None:
-            self._grasp_env.close()
-            self._grasp_env = None
-            self._grasp_policy = None
-        return super().close()
+    def render(self):
+        self.sync_visual_frames()
+        return super().render()

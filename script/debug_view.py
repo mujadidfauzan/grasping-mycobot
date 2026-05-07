@@ -238,8 +238,8 @@ def print_debug_state(env) -> None:
             f"angle={np.rad2deg(state['obj_target_angle_rad']):.2f} deg"
         )
         print(
-            f"Yaw sampled={np.rad2deg(state['sampled_object_yaw']):.2f} deg "
-            f"applied={np.rad2deg(state['applied_object_yaw']):.2f} deg "
+            # f"Yaw sampled={np.rad2deg(state['sampled_object_yaw']):.2f} deg "
+            # f"applied={np.rad2deg(state['applied_object_yaw']):.2f} deg "
             # f"current={np.rad2deg(state['object_yaw']):.2f} deg"
         )
         # print(
@@ -348,7 +348,6 @@ def main() -> None:
         args.env
         in {
             "InsertTargetEnv",
-            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -396,16 +395,15 @@ def main() -> None:
     xml_path = resolve_xml_path(args.env, args.xml_file)
 
     env_kwargs = {}
-    if args.env in {
+    if args.env == "InsertTargetEnvIK":
+        env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
+    elif args.env in {
         "InsertTargetEnv",
-        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
         grasp_env_name = args.grasp_env
-        if args.env == "InsertTargetEnvIK" and grasp_env_name == "GraspingEnvV2":
-            grasp_env_name = "GraspingEnvIK"
 
         env_kwargs.update(
             {
@@ -421,11 +419,6 @@ def main() -> None:
         )
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-        if args.env == "InsertTargetEnvIK":
-            env_kwargs["grasp_success_max_lift"] = args.grasp_max_lift
-            env_kwargs["grasp_qpos_close_threshold"] = (
-                args.grasp_qpos_close_threshold
-            )
         if args.env == "InsertTargetEnv":
             env_kwargs.update(
                 {
