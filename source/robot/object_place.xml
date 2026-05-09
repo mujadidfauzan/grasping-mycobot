@@ -139,7 +139,7 @@
       />
     </body>
 
-    <body name="tri_place" pos="0.23 0.00 0.0">
+    <!-- <body name="tri_place" pos="0.23 0.00 0.0">
       <geom
         name="tri_place_visual"
         type="mesh"
@@ -244,7 +244,7 @@
         rgba="1 1 0 1"
         type="sphere"
       />
-    </body>
+    </body> -->
 
     <body name="obj_box" pos="0.20 0.00 0.025">
       <freejoint name="obj_box_joint"/>
@@ -264,7 +264,7 @@
       />
     </body>
 
-    <body name="obj_triangle" pos="0.20 0.00 0.025">
+    <!-- <body name="obj_triangle" pos="0.20 0.00 0.025">
       <freejoint name="obj_triangle_joint"/>
       <geom
         name="obj_triangle_geom"
@@ -298,6 +298,6 @@
         rgba="0.5 0.5 1 1"
         type="sphere"
       />
-    </body>
+    </body> -->
   </worldbody>
 </mujoco>

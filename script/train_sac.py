@@ -516,7 +516,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grasp-env",
-        default="GraspingEnvV2",
+        default=None,
         help="For placement/insertion envs: grasping environment class name used by --grasp-model.",
     )
     parser.add_argument(
@@ -539,20 +539,8 @@ def parse_args():
     parser.add_argument(
         "--grasp-min-lift",
         type=float,
-        default=0.025,
+        default=0.05,
         help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
-    )
-    parser.add_argument(
-        "--grasp-max-lift",
-        type=float,
-        default=0.02,
-        help="For InsertTargetEnvIK: maximum object lift height allowed when accepting the closed-gripper reset snapshot.",
-    )
-    parser.add_argument(
-        "--grasp-qpos-close-threshold",
-        type=float,
-        default=0.002,
-        help="For InsertTargetEnvIK: minimum actual finger joint displacement required before reset accepts the gripper as physically closed.",
     )
     parser.add_argument(
         "--grasp-ee-obj-dist",
@@ -686,15 +674,18 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "gripper_action_scale": args.gripper_action_scale,
             }
         )
-    elif args.env == "InsertTargetEnvIK":
-        env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
     elif args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
-        grasp_env_name = args.grasp_env
+        grasp_env_name = (
+            args.grasp_env
+            if args.grasp_env is not None
+            else ("GraspingEnvIK" if args.env == "InsertTargetEnvIK" else "GraspingEnvV2")
+        )
 
         env_kwargs.update(
             {
@@ -843,6 +834,7 @@ def main():
         args.env
         in {
             "InsertTargetEnv",
+            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",

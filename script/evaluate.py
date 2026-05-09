@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--grasp-env",
-        default="GraspingEnvV2",
+        default=None,
         help="For placement/insertion envs: grasping environment class name used by --grasp-model.",
     )
     parser.add_argument(
@@ -101,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--grasp-min-lift",
         type=float,
-        default=0.025,
+        default=0.05,
         help="For placement/insertion envs: minimum object lift height required before a grasp snapshot is accepted.",
     )
     parser.add_argument(
@@ -444,6 +444,7 @@ def main() -> None:
         args.env
         in {
             "InsertTargetEnv",
+            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -510,18 +511,22 @@ def main() -> None:
     render_mode = None if args.render == "none" else args.render
     env_cls = env_registry[args.env]
     env_kwargs = {}
-    if args.env == "InsertTargetEnvIK":
-        env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
-    elif args.env in {
+    if args.env in {
         "InsertTargetEnv",
+        "InsertTargetEnvIK",
         "PlaceTargetEnv",
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
+        grasp_env_name = (
+            args.grasp_env
+            if args.grasp_env is not None
+            else ("GraspingEnvIK" if args.env == "InsertTargetEnvIK" else "GraspingEnvV2")
+        )
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
-                "grasp_env_name": args.grasp_env,
+                "grasp_env_name": grasp_env_name,
                 "grasp_xml_file": args.grasp_xml_file,
                 "grasp_max_steps": args.grasp_max_steps,
                 "grasp_attempts_per_reset": args.grasp_attempts,
@@ -587,6 +592,7 @@ def main() -> None:
             for _step in range(max_steps):
                 action, _ = model.predict(obs, deterministic=deterministic)
                 obs, _reward, terminated, truncated, _step_info = env.step(action)
+                print(f"Episode {ep+1}")
                 csv_writer.write_row(
                     build_debug_row(
                         episode=ep + 1,
