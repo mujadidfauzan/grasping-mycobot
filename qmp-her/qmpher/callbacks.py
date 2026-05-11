@@ -8,6 +8,26 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from .utils import coerce_scalar, flatten_numeric_info
 
+KNOWN_SELECTION_LABELS = (
+    "primitive_grasp",
+    "primitive_insert",
+    "target_policy",
+    "random_action",
+    "zero_action",
+)
+
+SHORT_LABELS = {
+    "primitive_grasp": "pg",
+    "primitive_insert": "pi",
+    "target_policy": "tp",
+    "random_action": "rand",
+    "zero_action": "zero",
+}
+
+
+def _safe_metric_label(label: str) -> str:
+    return SHORT_LABELS.get(str(label), str(label).replace("/", "_").replace(" ", "_"))
+
 
 class QSwitchInfoCallback(BaseCallback):
     """Log q-switch and manual gripper metrics from env info dicts."""
@@ -38,8 +58,22 @@ class QSwitchInfoCallback(BaseCallback):
                     }
                 )
                 selected_label = qswitch.get("selected_label")
+                candidate_labels = qswitch.get("candidate_labels", [])
+                label_set = set(KNOWN_SELECTION_LABELS)
+                if isinstance(candidate_labels, (list, tuple)):
+                    label_set.update(str(label) for label in candidate_labels)
                 if isinstance(selected_label, str):
-                    flat[f"qswitch/selected_is_{selected_label}"] = 1.0
+                    label_set.add(selected_label)
+
+                for label in sorted(label_set):
+                    safe_label = _safe_metric_label(label)
+                    flat[f"qswitch/sel_rate/{safe_label}"] = float(
+                        isinstance(selected_label, str) and selected_label == label
+                    )
+                    flat[f"qswitch/cand_rate/{safe_label}"] = float(
+                        isinstance(candidate_labels, (list, tuple))
+                        and label in candidate_labels
+                    )
 
             for key, value in flat.items():
                 scalar = coerce_scalar(value)

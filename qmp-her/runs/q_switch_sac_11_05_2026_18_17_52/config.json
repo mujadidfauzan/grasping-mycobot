@@ -1,0 +1,73 @@
+{
+  "args": {
+    "batch_size": 256,
+    "buffer_size": 1000000,
+    "device": "auto",
+    "disable_target_after_warmup": false,
+    "ent_coef": "auto_0.01",
+    "epsilon_decay_steps": 100000,
+    "epsilon_final": 0.02,
+    "epsilon_initial": 0.2,
+    "gamma": 0.99,
+    "goal_selection_strategy": "future",
+    "gradient_steps": 1,
+    "grasp_model": "logs/models/grasp-best.zip",
+    "grasp_xml_file": "/home/fauzan/Grasping_Skripsi/source/robot/object_lift.xml",
+    "include_target_during_warmup": false,
+    "include_zero_action": false,
+    "insert_model": "logs/models/insert-best.zip",
+    "learning_rate": 0.0003,
+    "learning_starts": 5000,
+    "log_freq": 1000,
+    "manual_close_angle_deg": null,
+    "manual_close_distance": 0.018,
+    "manual_release_angle_deg": 10.0,
+    "manual_release_distance": 0.012,
+    "n_sampled_goal": 4,
+    "non_strict_primitives": false,
+    "object_x_range": [
+      0.15,
+      0.27
+    ],
+    "object_y_range": [
+      -0.12,
+      0.12
+    ],
+    "object_yaw_range": [
+      -0.7853981633974483,
+      0.7853981633974483
+    ],
+    "object_z": 0.025,
+    "print_freq": 5000,
+    "q_aggregation": "min",
+    "render_mode": "none",
+    "reset_settle_steps": 20,
+    "resume": null,
+    "run_name": null,
+    "run_root": "/home/fauzan/Grasping_Skripsi/qmp-her/runs",
+    "save_freq": 50000,
+    "seed": null,
+    "stochastic_primitives": false,
+    "success_steps_required": 5,
+    "tau": 0.005,
+    "total_timesteps": 1000000,
+    "train_freq": 1,
+    "xml_file": "/home/fauzan/Grasping_Skripsi/source/robot/object_place.xml"
+  },
+  "policy_kwargs": {
+    "activation_fn": "ReLU",
+    "net_arch": {
+      "pi": [
+        512,
+        512,
+        256
+      ],
+      "qf": [
+        512,
+        512,
+        256
+      ]
+    }
+  },
+  "saved_at": "2026-05-11T18:17:52"
+}

@@ -5,7 +5,6 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from torch import nn
@@ -61,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-starts", type=int, default=5_000)
     parser.add_argument("--buffer-size", type=int, default=1_000_000)
     parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--n-sampled-goal", type=int, default=4)
+    parser.add_argument(
+        "--goal-selection-strategy",
+        choices=["future", "final", "episode"],
+        default="future",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
@@ -71,11 +76,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--render-mode", default="none", choices=["none", "human", "rgb_array"])
 
-    parser.add_argument(
-        "--regular-insert-reset",
-        action="store_true",
-        help="Use the original InsertTargetEnvIK grasp-snapshot reset instead of table reset.",
-    )
     parser.add_argument("--object-x-range", nargs=2, type=float, default=(0.15, 0.27))
     parser.add_argument("--object-y-range", nargs=2, type=float, default=(-0.12, 0.12))
     parser.add_argument("--object-z", type=float, default=0.025)
@@ -86,13 +86,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manual-close-angle-deg", type=float, default=None)
     parser.add_argument("--manual-release-distance", type=float, default=0.012)
     parser.add_argument("--manual-release-angle-deg", type=float, default=10.0)
-    parser.add_argument("--release-bonus", type=float, default=30.0)
-    parser.add_argument("--post-release-reward", type=float, default=1.0)
-    parser.add_argument("--terminate-after-release-steps", type=int, default=5)
     parser.add_argument(
-        "--keep-pose-reward-after-release",
-        action="store_true",
-        help="Do not remove object-target reward terms after manual release.",
+        "--success-steps-required",
+        type=int,
+        default=5,
+        help="Consecutive target-aligned steps required before ending as success.",
     )
 
     parser.add_argument("--epsilon-initial", type=float, default=0.20)
@@ -115,6 +113,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--save-freq", type=int, default=50_000)
+    parser.add_argument(
+        "--video-freq",
+        type=int,
+        default=50_000,
+        help="Record one rollout video every N env steps. Use 0 to disable.",
+    )
+    parser.add_argument("--video-length", type=int, default=1_000)
     parser.add_argument("--log-freq", type=int, default=1_000)
     parser.add_argument("--print-freq", type=int, default=5_000)
     return parser.parse_args()
@@ -126,62 +131,47 @@ def _require_file(path: Path, label: str) -> Path:
     return path
 
 
-def build_env(args: argparse.Namespace):
+def build_env(args: argparse.Namespace, videos_dir: Path, name_prefix: str):
     from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
 
-    from qmpher.envs import ManualGripperRewardWrapper, QMPInsertEndToEndEnv
-    from source.envs.insert_target_env_ik import InsertTargetEnvIK
+    from qmpher.envs import QMPGraspInsertEnv
 
     xml_file = _require_file(resolve_repo_path(args.xml_file), "Insert XML")
-    grasp_xml = _require_file(resolve_repo_path(args.grasp_xml_file), "Grasp XML")
-    grasp_model = _require_file(resolve_repo_path(args.grasp_model), "Grasp model")
-
-    close_angle_rad = (
-        None
-        if args.manual_close_angle_deg is None
-        else float(np.deg2rad(args.manual_close_angle_deg))
+    record_video = args.video_freq > 0
+    render_mode = (
+        "rgb_array"
+        if record_video
+        else None if args.render_mode == "none" else args.render_mode
     )
-    release_angle_rad = float(np.deg2rad(args.manual_release_angle_deg))
 
     def _make_env():
-        env_kwargs: dict[str, Any] = {
-            "xml_file": str(xml_file),
-            "render_mode": None if args.render_mode == "none" else args.render_mode,
-            "grasp_model_path": str(grasp_model),
-            "grasp_xml_file": str(grasp_xml),
-            "allow_eval_gripper_release": True,
-            "reset_gripper_eval_open": False,
-        }
-        if args.regular_insert_reset:
-            env = InsertTargetEnvIK(**env_kwargs)
-            start_open = False
-        else:
-            env = QMPInsertEndToEndEnv(
-                **env_kwargs,
-                object_x_range=_range_arg(list(args.object_x_range)),
-                object_y_range=_range_arg(list(args.object_y_range)),
-                object_z=args.object_z,
-                object_yaw_range=_range_arg(list(args.object_yaw_range)),
-                reset_settle_steps=args.reset_settle_steps,
-            )
-            start_open = True
-
-        env = ManualGripperRewardWrapper(
-            env,
-            start_open=start_open,
+        env = QMPGraspInsertEnv(
+            xml_file=str(xml_file),
+            render_mode=render_mode,
+            object_x_range=_range_arg(list(args.object_x_range)),
+            object_y_range=_range_arg(list(args.object_y_range)),
+            object_z=args.object_z,
+            object_yaw_range=_range_arg(list(args.object_yaw_range)),
+            reset_settle_steps=args.reset_settle_steps,
             close_distance=args.manual_close_distance,
-            close_angle_rad=close_angle_rad,
+            close_angle_deg=args.manual_close_angle_deg,
             release_distance=args.manual_release_distance,
-            release_angle_rad=release_angle_rad,
-            disable_pose_reward_after_release=not args.keep_pose_reward_after_release,
-            release_bonus=args.release_bonus,
-            post_release_reward=args.post_release_reward,
-            terminate_after_release_steps=args.terminate_after_release_steps,
+            release_angle_deg=args.manual_release_angle_deg,
+            success_steps_required=args.success_steps_required,
         )
         return Monitor(env)
 
-    return DummyVecEnv([_make_env])
+    env = DummyVecEnv([_make_env])
+    if record_video:
+        env = VecVideoRecorder(
+            env,
+            video_folder=str(videos_dir),
+            record_video_trigger=lambda step: step % args.video_freq == 0,
+            video_length=args.video_length,
+            name_prefix=name_prefix,
+        )
+    return env
 
 
 def build_primitives(args: argparse.Namespace) -> PrimitiveEnsemble:
@@ -226,7 +216,6 @@ def build_qswitch_config(args: argparse.Namespace):
         enabled=True,
         include_target_during_warmup=bool(args.include_target_during_warmup),
         include_target_after_learning_starts=not bool(args.disable_target_after_warmup),
-        force_primitives_during_warmup=True,
         include_zero_action=bool(args.include_zero_action),
         epsilon_initial=args.epsilon_initial,
         epsilon_final=args.epsilon_final,
@@ -254,6 +243,10 @@ def main() -> None:
     args = parse_args()
 
     from stable_baselines3.common.callbacks import CheckpointCallback
+    try:
+        from stable_baselines3 import HerReplayBuffer
+    except ImportError:
+        from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 
     from qmpher.callbacks import PrintQSwitchCallback, QSwitchInfoCallback
     from qmpher.q_switch_sac import QSwitchSAC
@@ -263,11 +256,13 @@ def main() -> None:
     run_dir = run_root / run_name
     model_dir = run_dir / "models"
     tb_dir = run_dir / "tensorboard"
+    videos_dir = run_dir / "videos"
     model_dir.mkdir(parents=True, exist_ok=True)
     tb_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir.mkdir(parents=True, exist_ok=True)
     save_run_config(args, run_dir)
 
-    env = build_env(args)
+    env = build_env(args, videos_dir, run_name)
     primitive_ensemble = build_primitives(args)
     qswitch_config = build_qswitch_config(args)
 
@@ -283,10 +278,15 @@ def main() -> None:
         print(f"Resuming target policy from: {args.resume}")
     else:
         model = QSwitchSAC(
-            "MlpPolicy",
+            "MultiInputPolicy",
             env,
             primitive_ensemble=primitive_ensemble,
             qswitch_config=qswitch_config,
+            replay_buffer_class=HerReplayBuffer,
+            replay_buffer_kwargs={
+                "n_sampled_goal": args.n_sampled_goal,
+                "goal_selection_strategy": args.goal_selection_strategy,
+            },
             learning_rate=args.learning_rate,
             buffer_size=args.buffer_size,
             learning_starts=args.learning_starts,
@@ -324,6 +324,8 @@ def main() -> None:
     print(f"Run directory: {run_dir}")
     print(f"Primitive grasp model: {resolve_repo_path(args.grasp_model)}")
     print(f"Primitive insert model: {resolve_repo_path(args.insert_model)}")
+    if args.video_freq > 0:
+        print(f"Recording videos every {args.video_freq} steps to: {videos_dir}")
     print("Manual gripper is active during training.")
 
     try:

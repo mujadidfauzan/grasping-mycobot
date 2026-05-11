@@ -12,12 +12,24 @@ from .primitives import PrimitiveCandidate, PrimitiveEnsemble
 from .utils import call_vec_env_method, first_env_from_vec
 
 
+SHORT_LABELS = {
+    "primitive_grasp": "pg",
+    "primitive_insert": "pi",
+    "target_policy": "tp",
+    "random_action": "rand",
+    "zero_action": "zero",
+}
+
+
+def _short_label(label: str) -> str:
+    return SHORT_LABELS.get(str(label), str(label).replace("/", "_").replace(" ", "_"))
+
+
 @dataclass
 class QSwitchConfig:
     enabled: bool = True
     include_target_during_warmup: bool = False
     include_target_after_learning_starts: bool = True
-    force_primitives_during_warmup: bool = True
     include_zero_action: bool = False
     epsilon_initial: float = 0.20
     epsilon_final: float = 0.02
@@ -32,7 +44,8 @@ class QSwitchSAC(SAC):
 
     At every rollout step this class asks primitive policies for candidate
     6-DoF actions, asks the current SAC actor for its own candidate action, and
-    executes the candidate with the highest target critic value Q(s, a).
+    executes the candidate with the highest value according to the current SAC
+    critic Q(s, a).
     """
 
     def __init__(
@@ -65,7 +78,9 @@ class QSwitchSAC(SAC):
         config = self.qswitch_config
         if config.epsilon_decay_steps <= 0:
             return float(config.epsilon_final)
-        progress = min(1.0, float(self.num_timesteps) / float(config.epsilon_decay_steps))
+        progress = min(
+            1.0, float(self.num_timesteps) / float(config.epsilon_decay_steps)
+        )
         return float(
             config.epsilon_initial
             + progress * (config.epsilon_final - config.epsilon_initial)
@@ -77,19 +92,73 @@ class QSwitchSAC(SAC):
             return bool(config.include_target_during_warmup)
         return bool(config.include_target_after_learning_starts)
 
+    @staticmethod
+    def _repeat_obs_for_candidates(obs: Any, n_candidates: int) -> Any:
+        """Build a batch where the same state is paired with every action candidate."""
+        if isinstance(obs, dict):
+            return {
+                key: np.repeat(
+                    np.asarray(value, dtype=np.float32).reshape(1, -1),
+                    n_candidates,
+                    axis=0,
+                )
+                for key, value in obs.items()
+            }
+        return np.repeat(
+            np.asarray(obs, dtype=np.float32).reshape(1, -1),
+            n_candidates,
+            axis=0,
+        )
+
+    @staticmethod
+    def _extract_single_obs(last_obs: Any) -> Any:
+        if isinstance(last_obs, dict):
+            return {
+                key: np.asarray(value, dtype=np.float32)[0]
+                for key, value in last_obs.items()
+            }
+        return np.asarray(last_obs[0], dtype=np.float32)
+
+    @staticmethod
+    def _primitive_obs_from_single_obs(single_obs: Any) -> np.ndarray:
+        if isinstance(single_obs, dict):
+            return np.asarray(single_obs["observation"], dtype=np.float32).reshape(-1)
+        return np.asarray(single_obs, dtype=np.float32).reshape(-1)
+
     def _candidate_q_values(
         self,
         *,
-        obs: np.ndarray,
+        obs: Any,
         candidate_actions: np.ndarray,
     ) -> np.ndarray:
-        obs_batch = np.repeat(np.asarray(obs).reshape(1, -1), candidate_actions.shape[0], axis=0)
+        """Score every candidate action with the target policy's learned critic.
+
+        Q-switch compares several actions for the same state `s`:
+
+        - primitive grasp action;
+        - primitive insert action;
+        - optionally the current SAC actor action;
+        - optionally zero/debug action.
+
+        The critic estimates expected future return Q(s, a). The selected action
+        is the one with the largest scalar Q score. SAC uses twin critics, so the
+        two Q estimates are reduced with `q_aggregation`; `min` is the default
+        conservative choice.
+        """
+        obs_batch = self._repeat_obs_for_candidates(obs, candidate_actions.shape[0])
+
+        # SB3 SAC trains the critic on scaled replay-buffer actions, so convert
+        # env-space actions from [-1, 1] Box semantics into critic action space.
         scaled_actions = self.policy.scale_action(candidate_actions)
 
         obs_tensor = obs_as_tensor(obs_batch, self.device)
         action_tensor = th.as_tensor(scaled_actions, device=self.device).float()
 
         with th.no_grad():
+            # The batch shape is:
+            #   obs_tensor      : [num_candidates, obs_dim or dict obs]
+            #   action_tensor   : [num_candidates, action_dim]
+            # The critic returns Q1 and Q2, each [num_candidates, 1].
             q_values = self.policy.critic(obs_tensor, action_tensor)
             q_stack = th.cat([q.reshape(-1, 1) for q in q_values], dim=1)
             if self.qswitch_config.q_aggregation == "mean":
@@ -121,18 +190,22 @@ class QSwitchSAC(SAC):
         ):
             return parent_action, parent_buffer_action
 
-        obs = np.asarray(self._last_obs[0], dtype=np.float32)
+        obs = self._extract_single_obs(self._last_obs)
+        primitive_obs = self._primitive_obs_from_single_obs(obs)
         action_shape = tuple(int(v) for v in self.action_space.shape)
         target_env = first_env_from_vec(self.env)
         candidates: list[PrimitiveCandidate] = []
 
         primitive_candidates = self.primitive_ensemble.candidate_actions(
-            current_obs=obs,
+            current_obs=primitive_obs,
             target_env=target_env,
             expected_action_shape=action_shape,
         )
         candidates.extend(primitive_candidates)
 
+        # After warmup, include the actor from the target SAC policy as another
+        # candidate. During warmup the selector can be forced to rely only on
+        # primitives unless no primitive candidate is available.
         include_target = self._should_include_target(learning_starts)
         if include_target or not candidates:
             candidates.append(
@@ -155,7 +228,9 @@ class QSwitchSAC(SAC):
         if not candidates:
             return parent_action, parent_buffer_action
 
-        actions = np.asarray([candidate.action for candidate in candidates], dtype=np.float32)
+        actions = np.asarray(
+            [candidate.action for candidate in candidates], dtype=np.float32
+        )
         actions = np.clip(actions, self.action_space.low, self.action_space.high)
         labels = [candidate.label for candidate in candidates]
         epsilon = self._current_epsilon()
@@ -164,9 +239,13 @@ class QSwitchSAC(SAC):
         q_values: np.ndarray
         selection_mode = "critic"
         if self._qswitch_rng.random() < epsilon:
+            # Exploration deliberately bypasses critic ranking, so logged Q
+            # values are NaN for this step.
             selection_mode = "epsilon_random"
             if config.epsilon_random_action:
-                selected_action = np.asarray(self.action_space.sample(), dtype=np.float32).reshape(-1)
+                selected_action = np.asarray(
+                    self.action_space.sample(), dtype=np.float32
+                ).reshape(-1)
                 selected_index = -1
                 q_values = np.full(actions.shape[0], np.nan, dtype=np.float64)
                 selected_label = "random_action"
@@ -176,6 +255,8 @@ class QSwitchSAC(SAC):
                 q_values = np.full(actions.shape[0], np.nan, dtype=np.float64)
                 selected_label = labels[selected_index]
         else:
+            # Normal Q-switch path: score every candidate under the same state,
+            # then execute the label/action with maximal predicted return.
             q_values = self._candidate_q_values(obs=obs, candidate_actions=actions)
             selected_index = int(np.argmax(q_values))
             selected_action = actions[selected_index]
@@ -186,7 +267,8 @@ class QSwitchSAC(SAC):
 
         selected_q = (
             float(q_values[selected_index])
-            if 0 <= selected_index < len(q_values) and np.isfinite(q_values[selected_index])
+            if 0 <= selected_index < len(q_values)
+            and np.isfinite(q_values[selected_index])
             else np.nan
         )
         debug = {
@@ -205,6 +287,12 @@ class QSwitchSAC(SAC):
             "learning_starts": int(learning_starts),
             "target_included": int(include_target),
         }
+        for label in sorted(
+            set(labels + [selected_label, "random_action", "target_policy"])
+        ):
+            metric_label = _short_label(label)
+            debug[f"cand_{metric_label}"] = int(label in labels)
+            debug[f"sel_{metric_label}"] = int(label == selected_label)
         self._push_debug(debug)
 
         return selected_action, selected_buffer_action
