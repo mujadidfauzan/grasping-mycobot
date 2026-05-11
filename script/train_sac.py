@@ -147,6 +147,42 @@ class DebugVideoOverlayWrapper(Wrapper):
         if target_dist is not None:
             lines.append(f"target dist: {target_dist:.3f} m")
 
+        object_target_dist = _coerce_scalar_metric(
+            debug_state.get("object_target_dist")
+        )
+        if object_target_dist is None:
+            object_target_dist = _coerce_scalar_metric(
+                debug_state.get("obj_target_dist")
+            )
+        if object_target_dist is not None:
+            lines.append(f"object lift dist: {object_target_dist:.3f} m")
+
+        lift_height = _coerce_scalar_metric(debug_state.get("lift_height"))
+        required_lift_height = _coerce_scalar_metric(
+            debug_state.get("required_lift_height")
+        )
+        if lift_height is not None:
+            if required_lift_height is not None:
+                lines.append(f"lift: {lift_height:.3f}/{required_lift_height:.3f} m")
+            else:
+                lines.append(f"lift: {lift_height:.3f} m")
+
+        grasp_latched = debug_state.get("grasp_latched")
+        if isinstance(grasp_latched, (bool, np.bool_)):
+            lines.append("grasp: closed" if grasp_latched else "grasp: open")
+        else:
+            grasp_latched_value = _coerce_scalar_metric(grasp_latched)
+            if grasp_latched_value is not None:
+                lines.append("grasp: closed" if grasp_latched_value else "grasp: open")
+
+        target_reached = debug_state.get("target_reached")
+        if isinstance(target_reached, (bool, np.bool_)):
+            lines.append("success: yes" if target_reached else "success: no")
+
+        ik_success = debug_state.get("ik_success")
+        if isinstance(ik_success, (bool, np.bool_)):
+            lines.append("ik: ok" if ik_success else "ik: best")
+
         sampled_place_yaw = _coerce_scalar_metric(
             debug_state.get("sampled_target_place_yaw")
         )
@@ -516,7 +552,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grasp-env",
-        default=None,
+        default="GraspingEnvIK",
         help="For placement/insertion envs: grasping environment class name used by --grasp-model.",
     )
     parser.add_argument(
@@ -681,16 +717,9 @@ def build_env(args, videos_dir: Path, name_prefix: str):
         "PlaceAboveTargetEnv",
         "PlaceAboveSiteEnv",
     }:
-        grasp_env_name = (
-            args.grasp_env
-            if args.grasp_env is not None
-            else ("GraspingEnvIK" if args.env == "InsertTargetEnvIK" else "GraspingEnvV2")
-        )
-
         env_kwargs.update(
             {
                 "grasp_model_path": args.grasp_model,
-                "grasp_env_name": grasp_env_name,
                 "grasp_xml_file": args.grasp_xml_file,
                 "grasp_max_steps": args.grasp_max_steps,
                 "grasp_attempts_per_reset": args.grasp_attempts,
@@ -699,6 +728,15 @@ def build_env(args, videos_dir: Path, name_prefix: str):
                 "grasp_success_hold_steps": args.grasp_hold_steps,
             }
         )
+        if args.env == "InsertTargetEnvIK":
+            if args.grasp_model is None:
+                env_kwargs.pop("grasp_model_path")
+        else:
+            grasp_env_name = (
+                args.grasp_env if args.grasp_env is not None else "GraspingEnvIK"
+            )
+            env_kwargs["grasp_env_name"] = grasp_env_name
+
         if args.env != "PlaceAboveSiteEnv":
             env_kwargs["terminate_ee_obj_distance"] = args.terminate_ee_obj_dist
         if args.env == "InsertTargetEnv":
@@ -796,7 +834,17 @@ class GripperAssistScheduleCallback(BaseCallback):
         return True
 
 
-def maybe_load_replay_buffer(model: SAC, checkpoint_path: Path):
+def maybe_load_replay_buffer(model: SAC, checkpoint_path: Path, env_name: str):
+    expected_env_root = PROJECT_ROOT / "logs" / "models" / env_name
+    try:
+        checkpoint_path.resolve().relative_to(expected_env_root.resolve())
+    except ValueError:
+        print(
+            "Replay buffer skipped; checkpoint is outside the current env model folder. "
+            "This avoids mixing replay data from a different task."
+        )
+        return
+
     # SB3 CheckpointCallback naming is typically:
     # model: <prefix>_<steps>_steps.zip
     # replay buffer: <prefix>_replay_buffer_<steps>_steps.pkl
@@ -834,7 +882,6 @@ def main():
         args.env
         in {
             "InsertTargetEnv",
-            "InsertTargetEnvIK",
             "PlaceTargetEnv",
             "PlaceAboveTargetEnv",
             "PlaceAboveSiteEnv",
@@ -880,7 +927,7 @@ def main():
             tensorboard_log=str(tb_dir),
             device="auto",
         )
-        maybe_load_replay_buffer(model, checkpoint_path)
+        maybe_load_replay_buffer(model, checkpoint_path, args.env)
         reset_num_timesteps = False
         print(f"Resuming from checkpoint: {checkpoint_path}")
     else:

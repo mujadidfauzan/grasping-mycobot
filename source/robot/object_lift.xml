@@ -70,7 +70,7 @@
       </body>
 
       <!-- TRIANGLE -->
-      <body name="obj_triangle" pos="0.20 0.00 0.025">
+      <!-- <body name="obj_triangle" pos="0.20 0.00 0.025">
         <freejoint name="obj_triangle_joint"/>
         <geom name="obj_triangle_geom"
               type="mesh"
@@ -78,10 +78,10 @@
               mass="0.03"
               material="triangle_material"/>
         <site name="obj_triangle_ref" pos="0 0 0.015" size="0.01 0.01 0.01" rgba="0.5 1 0.5 1" type="sphere"/>
-      </body>
+      </body> -->
 
       <!-- CYLINDER -->
-      <body name="obj_cylinder" pos="0.20 0.00 0.025">
+      <!-- <body name="obj_cylinder" pos="0.20 0.00 0.025">
         <freejoint name="obj_cylinder_joint"/>
         <geom name="obj_cylinder_geom"
               type="mesh"
@@ -89,7 +89,7 @@
               mass="0.03"
               material="cylinder_material"/>
         <site name="obj_cylinder_ref" pos="0 0 0.015" size="0.01 0.01 0.01" rgba="0.5 0.5 1 1" type="sphere"/>
-      </body>
+      </body> -->
 
     </worldbody>
 

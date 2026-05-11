@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory where evaluation CSV files will be saved.",
     )
     parser.add_argument(
+        "--post-grasp-mode",
+        choices=["off", "auto"],
+        default="off",
+        help="For GraspingEnvIK: off keeps training behavior; auto closes the gripper and lifts 5 cm after pose success.",
+    )
+    parser.add_argument(
         "--grasp-model",
         default=None,
         help="For placement/insertion envs: path to the trained grasping SAC .zip used to generate reset states.",
@@ -511,6 +517,8 @@ def main() -> None:
     render_mode = None if args.render == "none" else args.render
     env_cls = env_registry[args.env]
     env_kwargs = {}
+    if args.env == "GraspingEnvIK":
+        env_kwargs["post_grasp_mode"] = args.post_grasp_mode
     if args.env in {
         "InsertTargetEnv",
         "InsertTargetEnvIK",
