@@ -9,8 +9,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.utils import obs_as_tensor
 
 from .primitives import PrimitiveCandidate, PrimitiveEnsemble
-from .utils import call_vec_env_method, first_env_from_vec
-
+from .utils import call_vec_env_method, first_env_from_vec, unwrap_env
 
 SHORT_LABELS = {
     "primitive_grasp": "pg",
@@ -34,7 +33,7 @@ class QSwitchConfig:
     epsilon_initial: float = 0.20
     epsilon_final: float = 0.02
     epsilon_decay_steps: int = 100_000
-    epsilon_random_action: bool = True
+    epsilon_random_action: bool = False
     q_aggregation: str = "min"
     debug_to_env: bool = True
 
@@ -125,6 +124,81 @@ class QSwitchSAC(SAC):
             return np.asarray(single_obs["observation"], dtype=np.float32).reshape(-1)
         return np.asarray(single_obs, dtype=np.float32).reshape(-1)
 
+    @staticmethod
+    def _candidate_has_label(candidate: PrimitiveCandidate, label: str) -> bool:
+        candidate_label = str(candidate.label)
+        return candidate_label == label or candidate_label.startswith(f"{label}:")
+
+    def _phase_filter_primitive_candidates(
+        self,
+        *,
+        candidates: list[PrimitiveCandidate],
+        target_env: Any,
+    ) -> tuple[list[PrimitiveCandidate], dict[str, Any]]:
+        """Filter primitive candidates based on the manual gripper phase.
+
+        This prevents the selector from comparing semantically invalid actions,
+        especially during warmup when the critic is still random.
+        """
+        if not candidates:
+            return candidates, {
+                "phase_filter_enabled": 1,
+                "phase_filter_reason": "no_candidates",
+                "phase_filter_phase": "unknown",
+                "phase_filter_lift_height": 0.0,
+            }
+
+        env = unwrap_env(target_env)
+        phase = str(getattr(env, "gripper_phase", "open"))
+
+        lift_height = 0.0
+        try:
+            metrics = env._task_metrics()
+            lift_height = float(metrics.get("lift_height", 0.0))
+        except Exception:
+            lift_height = 0.0
+
+        min_lift_height = 0.035
+
+        grasp_candidates = [
+            c for c in candidates if self._candidate_has_label(c, "primitive_grasp")
+        ]
+        insert_candidates = [
+            c for c in candidates if self._candidate_has_label(c, "primitive_insert")
+        ]
+
+        reason = "pass_through"
+
+        if phase == "open":
+            filtered = grasp_candidates
+            reason = "open_use_grasp"
+
+        # elif phase == "closed" and lift_height < min_lift_height:
+        #     filtered = grasp_candidates
+        #     reason = "closed_not_lifted_use_grasp"
+
+        elif phase == "closed":
+            filtered = insert_candidates
+            reason = "closed_use_insert"
+
+        elif phase == "released":
+            filtered = []
+            reason = "released_use_target_fallback"
+
+        else:
+            filtered = candidates
+            reason = f"unknown_phase_{phase}"
+
+        return filtered, {
+            "en": 1,
+            "reason": reason,
+            "phase": phase,
+            "lift_h": float(lift_height),
+            "min_lift_h": 0.0,
+            "before": int(len(candidates)),
+            "after": int(len(filtered)),
+        }
+
     def _candidate_q_values(
         self,
         *,
@@ -201,6 +275,50 @@ class QSwitchSAC(SAC):
             target_env=target_env,
             expected_action_shape=action_shape,
         )
+
+        real_env = getattr(target_env, "unwrapped", target_env)
+        try:
+            metrics = real_env._task_metrics()
+        except Exception:
+            metrics = {}
+
+        # print(
+        #     "[QSWITCH CANDIDATE DEBUG] "
+        #     f"step={self.num_timesteps} "
+        #     f"phase={getattr(real_env, 'gripper_phase', 'n/a')} "
+        #     f"gripper_state={getattr(real_env, 'gripper_state', 'n/a')} "
+        #     f"lift_h={metrics.get('lift_height', 'n/a')} "
+        #     f"ee_obj_dist={metrics.get('ee_obj_dist', 'n/a')} "
+        #     f"primitive_labels={[c.label for c in primitive_candidates]} "
+        #     f"primitive_sources={[c.source for c in primitive_candidates]} "
+        #     f"primitive_errors={self.primitive_ensemble.last_errors}",
+        #     flush=True,
+        # )
+
+        primitive_labels_before_phase_filter = [
+            candidate.label for candidate in primitive_candidates
+        ]
+
+        primitive_candidates, phase_filter_debug = (
+            self._phase_filter_primitive_candidates(
+                candidates=primitive_candidates,
+                target_env=target_env,
+            )
+        )
+
+        primitive_labels_after_phase_filter = [
+            candidate.label for candidate in primitive_candidates
+        ]
+
+        # print(
+        #     "[PHASE FILTER DEBUG] "
+        #     f"step={self.num_timesteps} "
+        #     f"before={primitive_labels_before_phase_filter} "
+        #     f"after={primitive_labels_after_phase_filter} "
+        #     f"pf={phase_filter_debug}",
+        #     flush=True,
+        # )
+
         candidates.extend(primitive_candidates)
 
         # After warmup, include the actor from the target SAC policy as another
@@ -278,6 +396,9 @@ class QSwitchSAC(SAC):
             "candidate_q_values": q_values.tolist(),
             "candidate_sources": [candidate.source for candidate in candidates],
             "primitive_errors": list(self.primitive_ensemble.last_errors),
+            "prim_before_pf": primitive_labels_before_phase_filter,
+            "prim_after_pf": primitive_labels_after_phase_filter,
+            "pf": phase_filter_debug,
             "selected_index": int(selected_index),
             "selected_label": selected_label,
             "selected_q": selected_q,

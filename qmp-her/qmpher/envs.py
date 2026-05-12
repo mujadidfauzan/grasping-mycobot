@@ -20,7 +20,6 @@ from script.inverse_kinematics import (  # noqa: E402
     _quat_to_euler_xyz,
 )
 
-
 DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0}
 
 
@@ -45,20 +44,20 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         xml_file: str,
         frame_skip: int = 1,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
-        close_distance: float = 0.018,
+        close_distance: float = 0.01,
         close_angle_deg: float | None = None,
-        release_distance: float = 0.012,
+        release_distance: float = 0.01,
         release_angle_deg: float = 10.0,
         success_steps_required: int = 5,
         success_distance: float = 0.01,
         success_angle_deg: float = 10.0,
-        her_success_reward: float = 0.0,
+        her_success_reward: float = 100.0,
         her_failure_reward: float = -1.0,
-        max_episode_steps: int = 260,
+        max_episode_steps: int = 500,
         terminate_lost_object_distance: float = 0.08,
         cartesian_action_scale: float = 0.01,
         cartesian_rotation_scale_deg: float = 10.0,
-        ik_workspace_low: tuple[float, float, float] = (0.08, -0.24, 0.02),
+        ik_workspace_low: tuple[float, float, float] = (0.08, -0.24, 0.00),
         ik_workspace_high: tuple[float, float, float] = (0.36, 0.24, 0.45),
         ik_position_only: bool = False,
         ik_max_iters: int = 80,
@@ -157,9 +156,15 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         self.active_obj_name = self.object_name
 
         self.place_info = self._build_place_info()
-        self._default_place_pos = self.model.body_pos[int(self.place_info["body_id"])].copy()
-        self._default_place_quat = self.model.body_quat[int(self.place_info["body_id"])].copy()
-        self._place_site_local_pos = self.model.site_pos[int(self.place_info["site_id"])].copy()
+        self._default_place_pos = self.model.body_pos[
+            int(self.place_info["body_id"])
+        ].copy()
+        self._default_place_quat = self.model.body_quat[
+            int(self.place_info["body_id"])
+        ].copy()
+        self._place_site_local_pos = self.model.site_pos[
+            int(self.place_info["site_id"])
+        ].copy()
         self._place_site_local_quat = _normalize_quat(
             self.model.site_quat[int(self.place_info["site_id"])].copy()
         )
@@ -282,7 +287,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         site_name = f"obj_{obj_name}_ref"
         geom_name = f"obj_{obj_name}_geom"
         body_id = self._require_named_id(mujoco.mjtObj.mjOBJ_BODY, body_name, "body")
-        joint_id = self._require_named_id(mujoco.mjtObj.mjOBJ_JOINT, joint_name, "joint")
+        joint_id = self._require_named_id(
+            mujoco.mjtObj.mjOBJ_JOINT, joint_name, "joint"
+        )
         site_id = self._require_named_id(mujoco.mjtObj.mjOBJ_SITE, site_name, "site")
         geom_id = self._require_named_id(mujoco.mjtObj.mjOBJ_GEOM, geom_name, "geom")
         return {
@@ -355,9 +362,15 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             dtype=np.int64,
         )
         self._cartesian_action_scale = float(cartesian_action_scale)
-        self._cartesian_rotation_scale_rad = np.deg2rad(float(cartesian_rotation_scale_deg))
-        self._ik_workspace_low = np.asarray(ik_workspace_low, dtype=np.float64).reshape(3)
-        self._ik_workspace_high = np.asarray(ik_workspace_high, dtype=np.float64).reshape(3)
+        self._cartesian_rotation_scale_rad = np.deg2rad(
+            float(cartesian_rotation_scale_deg)
+        )
+        self._ik_workspace_low = np.asarray(ik_workspace_low, dtype=np.float64).reshape(
+            3
+        )
+        self._ik_workspace_high = np.asarray(
+            ik_workspace_high, dtype=np.float64
+        ).reshape(3)
         self._ik_position_only = bool(ik_position_only)
         self._ik_max_iters = int(ik_max_iters)
         self._ik_position_tolerance = float(ik_position_tolerance)
@@ -410,14 +423,18 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
     @staticmethod
     def _yaw_to_quat(yaw: float) -> np.ndarray:
         half_yaw = float(yaw) * 0.5
-        return np.array([np.cos(half_yaw), 0.0, 0.0, np.sin(half_yaw)], dtype=np.float64)
+        return np.array(
+            [np.cos(half_yaw), 0.0, 0.0, np.sin(half_yaw)], dtype=np.float64
+        )
 
     @staticmethod
     def _wrap_to_pi(angle_rad: float) -> float:
         return float((angle_rad + np.pi) % (2.0 * np.pi) - np.pi)
 
     def _wrap_vector_to_pi(self, angles_rad: np.ndarray) -> np.ndarray:
-        return np.array([self._wrap_to_pi(float(v)) for v in angles_rad], dtype=np.float64)
+        return np.array(
+            [self._wrap_to_pi(float(v)) for v in angles_rad], dtype=np.float64
+        )
 
     def _quat_to_yaw(self, quat: np.ndarray) -> float:
         quat = _normalize_quat(quat)
@@ -432,7 +449,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
     def _get_site_pose(self, site_name: str) -> tuple[np.ndarray, np.ndarray]:
         return self.data.site(site_name).xpos.copy(), self._get_site_quat(site_name)
 
-    def _rotation_vector(self, source_quat: np.ndarray, target_quat: np.ndarray) -> np.ndarray:
+    def _rotation_vector(
+        self, source_quat: np.ndarray, target_quat: np.ndarray
+    ) -> np.ndarray:
         source_quat = _normalize_quat(source_quat)
         target_quat = _normalize_quat(target_quat)
         delta = self._quat_multiply(target_quat, self._quat_conjugate(source_quat))
@@ -454,7 +473,8 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         target_quat: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         return (
-            np.asarray(target_pos, dtype=np.float64) - np.asarray(source_pos, dtype=np.float64),
+            np.asarray(target_pos, dtype=np.float64)
+            - np.asarray(source_pos, dtype=np.float64),
             self._rotation_vector(source_quat, target_quat),
         )
 
@@ -468,7 +488,8 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         body_quat_conj = self._quat_conjugate(_normalize_quat(body_quat))
         local_pos = self._quat_rotate_vector(
             body_quat_conj,
-            np.asarray(world_pos, dtype=np.float64) - np.asarray(body_pos, dtype=np.float64),
+            np.asarray(world_pos, dtype=np.float64)
+            - np.asarray(body_pos, dtype=np.float64),
         )
         local_quat = _normalize_quat(self._quat_multiply(body_quat_conj, world_quat))
         return local_pos, local_quat
@@ -489,7 +510,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         return self._get_site_pose(self.target_site_name)
 
     def _current_arm_joint_positions(self) -> np.ndarray:
-        return np.asarray(self.data.qpos[self._arm_qpos_indices], dtype=np.float64).copy()
+        return np.asarray(
+            self.data.qpos[self._arm_qpos_indices], dtype=np.float64
+        ).copy()
 
     def _reset_ik_state(self) -> None:
         ee_pos, ee_quat = self._get_ee_pose()
@@ -507,16 +530,26 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             base_quat = self._ik_target_quat.copy()
         else:
             base_pos, base_quat = self._get_ee_pose()
-        target_pos = np.clip(base_pos + delta_pos, self._ik_workspace_low, self._ik_workspace_high)
+        target_pos = np.clip(
+            base_pos + delta_pos, self._ik_workspace_low, self._ik_workspace_high
+        )
         target_rpy = self._wrap_vector_to_pi(_quat_to_euler_xyz(base_quat) + delta_rpy)
         return target_pos, _quat_from_euler_xyz(*target_rpy)
 
-    def _ik_action_to_target_ctrl(self, action: np.ndarray) -> tuple[np.ndarray, np.ndarray, IKResult]:
+    def _ik_action_to_target_ctrl(
+        self, action: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, IKResult]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != self.action_space.shape:
-            raise ValueError(f"Expected action shape {self.action_space.shape}, got {action.shape}.")
+            raise ValueError(
+                f"Expected action shape {self.action_space.shape}, got {action.shape}."
+            )
+
         action = np.clip(action, self.action_space.low, self.action_space.high)
         target_pos, target_quat = self._compute_ik_target(action)
+
+        # print(f"Target Pos : {target_pos}, Target Quat : {target_quat}", flush=True)
+
         ik_result = self._ik_solver.solve(
             target_pos,
             target_quat,
@@ -532,23 +565,43 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             random_restarts=self._ik_random_restarts,
             seed=self._ik_seed,
         )
+
         target_ctrl = self.data.ctrl.copy()
         current_arm_ctrl = self.data.ctrl[self._arm_ctrl_indices].copy()
+
+        # PENTING:
+        # Pakai q_rad meskipun ik_result.success False,
+        # sama seperti GraspingEnvIK.
         desired_arm_ctrl = ik_result.q_rad.copy()
+
         if self._max_joint_ctrl_delta_rad > 0.0:
-            desired_arm_ctrl = current_arm_ctrl + np.clip(
-                desired_arm_ctrl - current_arm_ctrl,
+            delta_q = desired_arm_ctrl - current_arm_ctrl
+            delta_q = np.clip(
+                delta_q,
                 -self._max_joint_ctrl_delta_rad,
                 self._max_joint_ctrl_delta_rad,
             )
+            desired_arm_ctrl = current_arm_ctrl + delta_q
+
         target_ctrl[self._arm_ctrl_indices] = desired_arm_ctrl
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
+
         self.last_action = action.astype(np.float32)
+
+        # Untuk test awal, commit target seperti GraspingEnvIK.
+        # Ini membuat smooth target bisa bergerak step-by-step.
         self._ik_target_pos = target_pos.copy()
         self._ik_target_quat = target_quat.copy()
+
         self._last_ik_result = ik_result
-        if not ik_result.success:
+
+        if ik_result.success:
+            # print("IK Sukses", flush=True)
+            pass
+        else:
             self._ik_failure_count += 1
+            # print("IK Gagal, tapi tetap apply q_rad best-effort", flush=True)
+
         return action, target_ctrl, ik_result
 
     def _set_open_gripper_target(self, ctrl: np.ndarray) -> None:
@@ -571,7 +624,11 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         x = float(self.np_random.uniform(*self._object_x_range))
         y = float(self.np_random.uniform(*self._object_y_range))
         yaw = float(self.np_random.uniform(*self._object_yaw_range))
-        return np.array([x, y, self._object_z], dtype=np.float64), self._yaw_to_quat(yaw), yaw
+        return (
+            np.array([x, y, self._object_z], dtype=np.float64),
+            self._yaw_to_quat(yaw),
+            yaw,
+        )
 
     def _sample_target_place_pose(self) -> tuple[np.ndarray, np.ndarray, float]:
         place_pos = self._default_place_pos.copy()
@@ -581,10 +638,14 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         yaw = float(self.np_random.uniform(*self._target_place_yaw_range))
         return place_pos, self._yaw_to_quat(yaw), yaw
 
-    def _target_pos_for_place_pose(self, place_pos: np.ndarray, place_quat: np.ndarray) -> np.ndarray:
+    def _target_pos_for_place_pose(
+        self, place_pos: np.ndarray, place_quat: np.ndarray
+    ) -> np.ndarray:
         local_pos = self._place_site_local_pos.copy()
         local_pos[2] += self._target_height_above_place
-        return np.asarray(place_pos, dtype=np.float64) + self._quat_rotate_vector(place_quat, local_pos)
+        return np.asarray(place_pos, dtype=np.float64) + self._quat_rotate_vector(
+            place_quat, local_pos
+        )
 
     def _sample_target_place_pose_away_from_object(
         self,
@@ -605,20 +666,32 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         assert best_pose is not None
         return (*best_pose, best_distance, self._target_resample_attempts)
 
-    def _set_place_pose_in_model(self, place_pos: np.ndarray, place_quat: np.ndarray) -> None:
+    def _set_place_pose_in_model(
+        self, place_pos: np.ndarray, place_quat: np.ndarray
+    ) -> None:
         body_id = int(self.place_info["body_id"])
-        self.model.body_pos[body_id] = np.asarray(place_pos, dtype=np.float64).reshape(3)
-        self.model.body_quat[body_id] = _normalize_quat(np.asarray(place_quat, dtype=np.float64))
+        self.model.body_pos[body_id] = np.asarray(place_pos, dtype=np.float64).reshape(
+            3
+        )
+        self.model.body_quat[body_id] = _normalize_quat(
+            np.asarray(place_quat, dtype=np.float64)
+        )
 
     def _sync_target_site_to_active_place(self) -> None:
         place_body_id = int(self.place_info["body_id"])
         place_site_id = int(self.place_info["site_id"])
-        self.model.body_pos[self.target_body_id] = self.model.body_pos[place_body_id].copy()
-        self.model.body_quat[self.target_body_id] = self.model.body_quat[place_body_id].copy()
+        self.model.body_pos[self.target_body_id] = self.model.body_pos[
+            place_body_id
+        ].copy()
+        self.model.body_quat[self.target_body_id] = self.model.body_quat[
+            place_body_id
+        ].copy()
         target_local_pos = self.model.site_pos[place_site_id].copy()
         target_local_pos[2] += self._target_height_above_place
         self.model.site_pos[self.target_site_id] = target_local_pos
-        self.model.site_quat[self.target_site_id] = self.model.site_quat[place_site_id].copy()
+        self.model.site_quat[self.target_site_id] = self.model.site_quat[
+            place_site_id
+        ].copy()
 
     def _box_place_metrics(self) -> dict[str, np.ndarray | float]:
         obj_pos, obj_quat = self._get_active_obj_pose()
@@ -645,7 +718,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             "target_local_quat": target_local_quat,
             "object_target_local_pos_error": local_pos_error,
             "object_target_local_rot_error": local_rot_error,
-            "object_target_local_radial_error": float(np.linalg.norm(local_pos_error[:2])),
+            "object_target_local_radial_error": float(
+                np.linalg.norm(local_pos_error[:2])
+            ),
             "object_target_local_height_error": float(local_pos_error[2]),
             "object_target_local_angle_error": float(np.linalg.norm(local_rot_error)),
         }
@@ -682,7 +757,8 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             "target_angle": target_angle,
             "lift_height": lift_height,
             "target_pose_aligned": bool(
-                target_dist < self._success_distance and target_angle < self._success_angle_rad
+                target_dist < self._success_distance
+                and target_angle < self._success_angle_rad
             ),
         }
 
@@ -823,12 +899,16 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             self._last_target_resample_distance,
             self._last_target_resample_attempts,
         ) = self._sample_target_place_pose_away_from_object(obj_pos)
-        self._set_place_pose_in_model(self.sampled_target_place_pos, self.sampled_target_place_quat)
+        self._set_place_pose_in_model(
+            self.sampled_target_place_pos, self.sampled_target_place_quat
+        )
         self._sync_target_site_to_active_place()
         mujoco.mj_forward(self.model, self.data)
 
         target_pos, target_quat = self._get_target_pose()
-        obj_target_pos_error, _ = self._get_pose_error(obj_pos, obj_quat, target_pos, target_quat)
+        obj_target_pos_error, _ = self._get_pose_error(
+            obj_pos, obj_quat, target_pos, target_quat
+        )
         self.initial_object_target_dist = float(np.linalg.norm(obj_target_pos_error))
         self.best_object_target_dist = float(self.initial_object_target_dist)
         self.initial_obj_site_pos = obj_pos.copy()
@@ -837,7 +917,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         self.sampled_object_yaw = float(object_yaw)
         self.applied_object_yaw = float(self._quat_to_yaw(obj_quat))
         self.applied_target_place_yaw = float(
-            self._quat_to_yaw(_normalize_quat(self.data.body(self.place_body_name).xquat.copy()))
+            self._quat_to_yaw(
+                _normalize_quat(self.data.body(self.place_body_name).xquat.copy())
+            )
         )
         self._reset_ik_state()
         return self._get_obs()
@@ -847,6 +929,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         pre_metrics = self._task_metrics()
         manual_event = self._update_manual_gripper_phase(pre_metrics)
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
+        # print(f"Action di QMP ENV : {np.round(np.asarray(action).reshape(-1), 4)}")
         self._apply_manual_gripper_to_ctrl(target_ctrl)
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
         start_ctrl = self.data.ctrl.copy()
@@ -1078,7 +1161,9 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             "manual_release_steps": int(self.release_steps),
             "manual_release_event_count": int(self.release_event_count),
             "gripper_qpos": self.data.qpos[[self.gripL_qadr, self.gripR_qadr]].copy(),
-            "gripper_ctrl": self.data.ctrl[[self.gripL_act_id, self.gripR_act_id]].copy(),
+            "gripper_ctrl": self.data.ctrl[
+                [self.gripL_act_id, self.gripR_act_id]
+            ].copy(),
             "last_action": self.last_action.copy(),
             "sampled_target_place_pos": self.sampled_target_place_pos.copy(),
             "sampled_target_place_quat": self.sampled_target_place_quat.copy(),
@@ -1088,10 +1173,18 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             "applied_target_place_yaw": float(self.applied_target_place_yaw),
             "sampled_object_yaw": float(self.sampled_object_yaw),
             "applied_object_yaw": float(self.applied_object_yaw),
-            "object_local_pos": np.asarray(box_place_metrics["object_local_pos"]).copy(),
-            "object_local_quat": np.asarray(box_place_metrics["object_local_quat"]).copy(),
-            "target_local_pos": np.asarray(box_place_metrics["target_local_pos"]).copy(),
-            "target_local_quat": np.asarray(box_place_metrics["target_local_quat"]).copy(),
+            "object_local_pos": np.asarray(
+                box_place_metrics["object_local_pos"]
+            ).copy(),
+            "object_local_quat": np.asarray(
+                box_place_metrics["object_local_quat"]
+            ).copy(),
+            "target_local_pos": np.asarray(
+                box_place_metrics["target_local_pos"]
+            ).copy(),
+            "target_local_quat": np.asarray(
+                box_place_metrics["target_local_quat"]
+            ).copy(),
             "object_target_local_pos_error": np.asarray(
                 box_place_metrics["object_target_local_pos_error"]
             ).copy(),

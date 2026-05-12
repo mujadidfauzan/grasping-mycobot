@@ -30,15 +30,15 @@ class PrimitiveAdapter(Protocol):
         *,
         current_obs: np.ndarray,
         target_env: Any,
-    ) -> list[PrimitiveCandidate]:
-        ...
+    ) -> list[PrimitiveCandidate]: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class _LazySACModel:
-    def __init__(self, model_path: str | Path, *, env: Any | None = None, device: str = "auto"):
+    def __init__(
+        self, model_path: str | Path, *, env: Any | None = None, device: str = "auto"
+    ):
         self.model_path = resolve_repo_path(model_path)
         self.env = env
         self.device = device
@@ -53,7 +53,9 @@ class _LazySACModel:
                     "QMP-HER primitives require stable-baselines3. Install the "
                     "same training dependencies used by script/train_sac.py."
                 ) from exc
-            self.model = SAC.load(str(self.model_path), env=self.env, device=self.device)
+            self.model = SAC.load(
+                str(self.model_path), env=self.env, device=self.device
+            )
         return self.model
 
 
@@ -80,7 +82,29 @@ class InsertPrimitiveAdapter:
         current_obs: np.ndarray,
         target_env: Any,
     ) -> list[PrimitiveCandidate]:
-        del target_env
+        env = unwrap_env(target_env)
+
+        # Insert primitive hanya valid setelah object sudah digenggam.
+        # Jangan gunakan insert saat gripper masih open/released.
+        gripper_phase = getattr(env, "gripper_phase", "open")
+        if gripper_phase != "closed":
+            return []
+
+        # Insert primitive juga hanya valid kalau object sudah cukup terangkat.
+        # Ini mencegah model insert menerima state OOD: object masih di meja.
+        # min_lift_height = (
+        #     0.035  # 3.5 cm relatif dari initial object z; boleh tuning nanti
+        # )
+
+        try:
+            metrics = env._task_metrics()
+            lift_height = float(metrics.get("lift_height", 0.0))
+        except Exception:
+            lift_height = 0.0
+
+        # if lift_height < min_lift_height:
+        #     return []
+
         try:
             model = self._loader.get()
             action, _ = model.predict(
@@ -98,11 +122,17 @@ class InsertPrimitiveAdapter:
                     info={"error": repr(exc)},
                 )
             ]
+
         return [
             PrimitiveCandidate(
                 label=self.label,
                 action=np.asarray(action, dtype=np.float32).reshape(-1),
                 source="insert_policy",
+                info={
+                    "gripper_phase": gripper_phase,
+                    "lift_height": lift_height,
+                    # "min_lift_height": min_lift_height,
+                },
             )
         ]
 
@@ -164,13 +194,122 @@ class GraspPrimitiveAdapter:
         del current_obs
         try:
             model, grasp_env = self._ensure_loaded()
+            # Menyamakan state dari target_env ke grasp_env dengan cara yang sama seperti saat training.
             sync_grasp_env_from_target(
                 target_env=unwrap_env(target_env),
                 grasp_env=grasp_env,
                 target_object_name="box",
             )
             obs = grasp_env._get_obs()
+            # ===================== DEBUG OBS GRASPING ENV =====================
+            env = unwrap_env(target_env)
+
+            # print("\n" + "=" * 120, flush=True)
+            # print(
+            #     f"[GRASP OBS COMPONENT DEBUG] "
+            #     f"qmp_step={getattr(env, 'current_step', -1)} "
+            #     f"qmp_phase={getattr(env, 'gripper_phase', 'n/a')} "
+            #     f"obs_shape={np.asarray(obs).shape}",
+            #     flush=True,
+            # )
+
+            # start_idx = 0
+            # components = grasp_env._get_obs_components()
+
+            # for name, component in components:
+            #     arr = np.asarray(component, dtype=np.float64).reshape(-1)
+            #     end_idx = start_idx + arr.size
+
+            #     print(
+            #         f"[OBS] idx={start_idx}:{end_idx} "
+            #         f"name={name} "
+            #         f"shape={arr.shape} "
+            #         f"value={np.array2string(arr, precision=5, suppress_small=True, threshold=np.inf, max_line_width=200)}",
+            #         flush=True,
+            #     )
+
+            #     start_idx = end_idx
+
+            # print(
+            #     f"[OBS CHECK] total_component_len={start_idx} "
+            #     f"obs_len={np.asarray(obs).reshape(-1).shape[0]}",
+            #     flush=True,
+            # )
+
+            # print("=" * 120 + "\n", flush=True)
+            # # =================== END DEBUG OBS GRASPING ENV ===================
+
+            # print("\n[TEMPORAL OBS DEBUG]", flush=True)
+            # print(f"qmp_step={getattr(env, 'current_step', -1)}", flush=True)
+
+            # print(
+            #     "QMP last_action      =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(env, "last_action", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
+            # print(
+            #     "GRASP last_action    =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(grasp_env, "last_action", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
+            # print(
+            #     "QMP ik_target_pos    =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(env, "_ik_target_pos", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
+            # print(
+            #     "GRASP ik_target_pos  =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(grasp_env, "_ik_target_pos", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
+            # print(
+            #     "QMP ik_target_quat   =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(env, "_ik_target_quat", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
+            # print(
+            #     "GRASP ik_target_quat =",
+            #     np.round(
+            #         np.asarray(
+            #             getattr(grasp_env, "_ik_target_quat", []), dtype=np.float64
+            #         ).reshape(-1),
+            #         5,
+            #     ),
+            #     flush=True,
+            # )
+
             action, _ = model.predict(obs, deterministic=self.deterministic)
+
         except Exception as exc:
             if self.strict:
                 raise

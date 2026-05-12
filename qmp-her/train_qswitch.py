@@ -18,7 +18,6 @@ if str(THIS_DIR) not in sys.path:
 
 from qmpher.utils import resolve_repo_path
 
-
 DEFAULT_XML = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 DEFAULT_GRASP_XML = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 DEFAULT_GRASP_MODEL = PROJECT_ROOT / "melogs" / "ik_models" / "grasp-ik-model.zip"
@@ -54,7 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--insert-model", default=str(DEFAULT_INSERT_MODEL))
     parser.add_argument("--run-root", default=str(DEFAULT_RUN_ROOT))
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--resume", default=None, help="Optional target QSwitchSAC checkpoint.")
+    parser.add_argument(
+        "--resume", default=None, help="Optional target QSwitchSAC checkpoint."
+    )
 
     parser.add_argument("--total-timesteps", type=int, default=1_000_000)
     parser.add_argument("--learning-starts", type=int, default=5_000)
@@ -74,12 +75,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-steps", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--render-mode", default="none", choices=["none", "human", "rgb_array"])
+    parser.add_argument(
+        "--render-mode", default="none", choices=["none", "human", "rgb_array"]
+    )
 
     parser.add_argument("--object-x-range", nargs=2, type=float, default=(0.15, 0.27))
     parser.add_argument("--object-y-range", nargs=2, type=float, default=(-0.12, 0.12))
     parser.add_argument("--object-z", type=float, default=0.025)
-    parser.add_argument("--object-yaw-range", nargs=2, type=float, default=(-np.pi / 4, np.pi / 4))
+    parser.add_argument(
+        "--object-yaw-range", nargs=2, type=float, default=(-np.pi / 4, np.pi / 4)
+    )
     parser.add_argument("--reset-settle-steps", type=int, default=20)
 
     parser.add_argument("--manual-close-distance", type=float, default=0.018)
@@ -220,6 +225,9 @@ def build_qswitch_config(args: argparse.Namespace):
         epsilon_initial=args.epsilon_initial,
         epsilon_final=args.epsilon_final,
         epsilon_decay_steps=args.epsilon_decay_steps,
+        # Penting: epsilon tidak boleh raw random action untuk IK 6D.
+        # Epsilon hanya memilih random dari candidate yang sudah valid.
+        epsilon_random_action=False,
         q_aggregation=args.q_aggregation,
     )
 
@@ -243,6 +251,7 @@ def main() -> None:
     args = parse_args()
 
     from stable_baselines3.common.callbacks import CheckpointCallback
+
     try:
         from stable_baselines3 import HerReplayBuffer
     except ImportError:
@@ -251,7 +260,9 @@ def main() -> None:
     from qmpher.callbacks import PrintQSwitchCallback, QSwitchInfoCallback
     from qmpher.q_switch_sac import QSwitchSAC
 
-    run_name = args.run_name or f"q_switch_sac_{datetime.now().strftime('%d_%m_%Y_%H_%M_%S')}"
+    run_name = (
+        args.run_name or f"q_switch_sac_{datetime.now().strftime('%d_%m_%Y_%H_%M_%S')}"
+    )
     run_root = resolve_repo_path(args.run_root)
     run_dir = run_root / run_name
     model_dir = run_dir / "models"

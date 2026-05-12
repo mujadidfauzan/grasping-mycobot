@@ -91,7 +91,11 @@ def _copy_common_ctrl(source_env: Any, target_env: Any) -> np.ndarray:
     target_act_map = _name_map(target_env.model, mujoco.mjtObj.mjOBJ_ACTUATOR)
     for act_name in sorted(set(source_act_map).intersection(target_act_map)):
         ctrl[target_act_map[act_name]] = source_env.data.ctrl[source_act_map[act_name]]
-    return np.clip(ctrl, target_env.model.actuator_ctrlrange[:, 0], target_env.model.actuator_ctrlrange[:, 1])
+    return np.clip(
+        ctrl,
+        target_env.model.actuator_ctrlrange[:, 0],
+        target_env.model.actuator_ctrlrange[:, 1],
+    )
 
 
 def sync_grasp_env_from_target(
@@ -139,3 +143,18 @@ def sync_grasp_env_from_target(
     if callable(sync_visual_frames):
         sync_visual_frames()
     mujoco.mj_forward(target.model, target.data)
+
+    if hasattr(source, "last_action") and hasattr(target, "last_action"):
+        target.last_action = np.asarray(source.last_action, dtype=np.float32).copy()
+    if hasattr(source, "_ik_target_pos") and hasattr(target, "_ik_target_pos"):
+        target._ik_target_pos = np.asarray(
+            source._ik_target_pos, dtype=np.float64
+        ).copy()
+
+    if hasattr(source, "_ik_target_quat") and hasattr(target, "_ik_target_quat"):
+        target._ik_target_quat = np.asarray(
+            source._ik_target_quat, dtype=np.float64
+        ).copy()
+
+    if hasattr(source, "_ik_failure_count") and hasattr(target, "_ik_failure_count"):
+        target._ik_failure_count = int(source._ik_failure_count)
