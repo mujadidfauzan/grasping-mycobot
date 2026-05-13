@@ -16,7 +16,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
-DEFAULT_INSERT_MODEL_PATH = PROJECT_ROOT / "melogs" / "ik_models" / "insert-ik-model.zip"
+DEFAULT_INSERT_MODEL_PATH = (
+    PROJECT_ROOT / "melogs" / "ik_models" / "insert-ik-model.zip"
+)
 DEFAULT_EVAL_LOG_DIR = PROJECT_ROOT / "logs_eval"
 
 
@@ -127,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--grasp-min-lift",
         type=float,
-        default=0.025,
+        default=0.035,
         help="Minimum lift height required for an accepted grasp snapshot.",
     )
     parser.add_argument(
@@ -173,7 +175,9 @@ def resolve_latest_model() -> Path:
             f"Model folder not found: {models_root}. Pass --model explicitly."
         )
 
-    candidates = sorted(models_root.glob("**/*.zip"), key=lambda path: path.stat().st_mtime)
+    candidates = sorted(
+        models_root.glob("**/*.zip"), key=lambda path: path.stat().st_mtime
+    )
     if not candidates:
         raise FileNotFoundError(
             f"No .zip model found under {models_root}. Pass --model explicitly."
@@ -198,7 +202,9 @@ def resolve_output_csv_path(output_dir_arg: str, model_path: Path) -> Path:
     model_label = "".join(
         char if char.isalnum() or char in "._-" else "_" for char in model_path.stem
     ).strip("._")
-    return output_dir / "InsertTargetEnvIK" / f"{timestamp}_{model_label}_debug_state.csv"
+    return (
+        output_dir / "InsertTargetEnvIK" / f"{timestamp}_{model_label}_debug_state.csv"
+    )
 
 
 def format_metric(value: Any, precision: int = 4) -> str:
@@ -352,7 +358,9 @@ class DebugCsvWriter:
 
         self._rows.append(dict(normalized))
         assert self._writer is not None
-        self._writer.writerow({key: normalized.get(key, "") for key in self._fieldnames})
+        self._writer.writerow(
+            {key: normalized.get(key, "") for key in self._fieldnames}
+        )
         self._file.flush()
 
     def close(self) -> None:
@@ -518,7 +526,10 @@ def main() -> None:
             for step in range(1, max_steps + 1):
                 if not released and not release_pending and step > max_policy_steps:
                     break
-                if release_pending and pre_release_hold_count >= args.pre_release_hold_steps:
+                if (
+                    release_pending
+                    and pre_release_hold_count >= args.pre_release_hold_steps
+                ):
                     env.open_gripper_for_eval()
                     released = True
                     release_pending = False

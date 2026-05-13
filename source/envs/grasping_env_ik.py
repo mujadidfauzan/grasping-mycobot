@@ -889,38 +889,38 @@ class GraspingEnvIK(MujocoEnv, utils.EzPickle):
         if self.render_mode == "human":
             self.render()
 
-        print("\n" + "=" * 120, flush=True)
-        print(
-            f"[GRASP OBS COMPONENT DEBUG] "
-            f"qmp_step={self.current_step}"
-            f"obs_shape={np.asarray(observation).shape}",
-            flush=True,
-        )
+        # print("\n" + "=" * 120, flush=True)
+        # print(
+        #     f"[GRASP OBS COMPONENT DEBUG] "
+        #     f"qmp_step={self.current_step}"
+        #     f"obs_shape={np.asarray(observation).shape}",
+        #     flush=True,
+        # )
 
-        start_idx = 0
-        components = self._get_obs_components()
+        # start_idx = 0
+        # components = self._get_obs_components()
 
-        for name, component in components:
-            arr = np.asarray(component, dtype=np.float64).reshape(-1)
-            end_idx = start_idx + arr.size
+        # for name, component in components:
+        #     arr = np.asarray(component, dtype=np.float64).reshape(-1)
+        #     end_idx = start_idx + arr.size
 
-            print(
-                f"[OBS] idx={start_idx}:{end_idx} "
-                f"name={name} "
-                f"shape={arr.shape} "
-                f"value={np.array2string(arr, precision=5, suppress_small=True, threshold=np.inf, max_line_width=200)}",
-                flush=True,
-            )
+        #     print(
+        #         f"[OBS] idx={start_idx}:{end_idx} "
+        #         f"name={name} "
+        #         f"shape={arr.shape} "
+        #         f"value={np.array2string(arr, precision=5, suppress_small=True, threshold=np.inf, max_line_width=200)}",
+        #         flush=True,
+        #     )
 
-            start_idx = end_idx
+        #     start_idx = end_idx
 
-        print(
-            f"[OBS CHECK] total_component_len={start_idx} "
-            f"obs_len={np.asarray(observation).reshape(-1).shape[0]}",
-            flush=True,
-        )
+        # print(
+        #     f"[OBS CHECK] total_component_len={start_idx} "
+        #     f"obs_len={np.asarray(observation).reshape(-1).shape[0]}",
+        #     flush=True,
+        # )
 
-        print("=" * 120 + "\n", flush=True)
+        # print("=" * 120 + "\n", flush=True)
         # =================== END DEBUG OBS GRASPING ENV ===================
 
         return observation, reward, terminated, truncated, reward_info

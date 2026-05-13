@@ -28,7 +28,7 @@ DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_place
 DEFAULT_GRASP_XML_PATH = (
     Path(__file__).resolve().parents[1] / "robot" / "object_lift.xml"
 )
-DEFAULT_GRASP_MODEL_PATH = PROJECT_ROOT / "melogs" / "ik_models" / "grasp-ik-model.zip"
+DEFAULT_GRASP_MODEL_PATH = PROJECT_ROOT / "logs" / "models" / "grasp-best.zip"
 
 
 class InsertTargetEnvIK(MujocoEnv, utils.EzPickle):
@@ -1350,6 +1350,9 @@ class InsertTargetEnvIK(MujocoEnv, utils.EzPickle):
         self._sync_target_site_to_active_place()
         mujoco.mj_forward(self.model, self.data)
 
+        print(
+            f"Object pos : {self._get_active_obj_pose()[0]}, Target pos: {self._get_target_pose()[0]}"
+        )
         observation = self._get_obs()
         reward, reward_info = self._get_rew(action)
         terminated_success = self.success_counter >= self._success_steps_required

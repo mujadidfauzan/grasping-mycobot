@@ -106,11 +106,69 @@ class InsertPrimitiveAdapter:
         #     return []
 
         try:
+            # print("\n" + "=" * 120, flush=True)
+            # print(
+            #     "[INSERT OBS DEBUG] "
+            #     f"qmp_step={getattr(env, 'current_step', -1)} "
+            #     f"phase={getattr(env, 'gripper_phase', 'n/a')} "
+            #     f"gripper_state={getattr(env, 'gripper_state', 'n/a')} "
+            #     f"current_obs_shape={np.asarray(current_obs).shape}",
+            #     flush=True,
+            # )
+
+            # try:
+            #     metrics = env._task_metrics()
+            #     print(
+            #         "[INSERT STATE DEBUG] "
+            #         f"obj_pos={np.round(metrics['obj_pos'], 5)} "
+            #         f"target_pos={np.round(metrics['target_pos'], 5)} "
+            #         f"obj_target_err={np.round(metrics['obj_target_pos_error'], 5)} "
+            #         f"target_dist={float(metrics['target_dist']):.6f} "
+            #         f"target_angle_deg={np.rad2deg(float(metrics['target_angle'])):.3f} "
+            #         f"ee_obj_dist={float(metrics['ee_obj_dist']):.6f} "
+            #         f"lift_h={float(metrics['lift_height']):.6f} "
+            #         f"aligned={int(metrics['target_pose_aligned'])}",
+            #         flush=True,
+            #     )
+            # except Exception as e:
+            #     print(f"[INSERT STATE DEBUG ERROR] {repr(e)}", flush=True)
+
+            # try:
+            #     start_idx = 0
+            #     for name, component in env._get_obs_components():
+            #         arr = np.asarray(component, dtype=np.float64).reshape(-1)
+            #         end_idx = start_idx + arr.size
+
+            #         print(
+            #             f"[INSERT OBS] idx={start_idx}:{end_idx} "
+            #             f"name={name} "
+            #             f"shape={arr.shape} "
+            #             f"value={np.array2string(arr, precision=5, suppress_small=True, threshold=np.inf, max_line_width=220)}",
+            #             flush=True,
+            #         )
+
+            #         start_idx = end_idx
+
+            #     print(
+            #         f"[INSERT OBS CHECK] "
+            #         f"component_total_len={start_idx} "
+            #         f"current_obs_len={np.asarray(current_obs).reshape(-1).shape[0]}",
+            #         flush=True,
+            #     )
+            # except Exception as e:
+            #     print(f"[INSERT OBS COMPONENT DEBUG ERROR] {repr(e)}", flush=True)
+
+            # print("=" * 120 + "\n", flush=True)
             model = self._loader.get()
             action, _ = model.predict(
                 np.asarray(current_obs, dtype=np.float32),
                 deterministic=self.deterministic,
             )
+            # print(
+            #     "[INSERT ACTION DEBUG] "
+            #     f"action={np.array2string(np.asarray(action).reshape(-1), precision=5, suppress_small=True)}",
+            #     flush=True,
+            # )
         except Exception as exc:
             if self.strict:
                 raise
@@ -202,7 +260,7 @@ class GraspPrimitiveAdapter:
             )
             obs = grasp_env._get_obs()
             # ===================== DEBUG OBS GRASPING ENV =====================
-            env = unwrap_env(target_env)
+            # env = unwrap_env(target_env)
 
             # print("\n" + "=" * 120, flush=True)
             # print(

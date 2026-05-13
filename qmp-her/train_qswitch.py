@@ -87,9 +87,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--reset-settle-steps", type=int, default=20)
 
-    parser.add_argument("--manual-close-distance", type=float, default=0.018)
+    parser.add_argument("--manual-close-distance", type=float, default=0.01)
     parser.add_argument("--manual-close-angle-deg", type=float, default=None)
-    parser.add_argument("--manual-release-distance", type=float, default=0.012)
+    parser.add_argument("--manual-release-distance", type=float, default=0.01)
     parser.add_argument("--manual-release-angle-deg", type=float, default=10.0)
     parser.add_argument(
         "--success-steps-required",
@@ -327,7 +327,7 @@ def main() -> None:
                 save_freq=args.save_freq,
                 save_path=str(model_dir),
                 name_prefix="q_switch_sac",
-                save_replay_buffer=True,
+                save_replay_buffer=False,
                 save_vecnormalize=False,
             ),
         )

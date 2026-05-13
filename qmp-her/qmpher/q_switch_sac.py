@@ -173,9 +173,25 @@ class QSwitchSAC(SAC):
             filtered = grasp_candidates
             reason = "open_use_grasp"
 
-        # elif phase == "closed" and lift_height < min_lift_height:
-        #     filtered = grasp_candidates
-        #     reason = "closed_not_lifted_use_grasp"
+        elif phase == "closed" and lift_height < min_lift_height:
+            lift_action = np.zeros_like(candidates[0].action, dtype=np.float32).reshape(
+                -1
+            )
+            lift_action[2] = 0.1
+
+            filtered = [
+                PrimitiveCandidate(
+                    label="script_lift",
+                    action=lift_action,
+                    source="scripted_lift",
+                    info={
+                        "phase": phase,
+                        "lift_h": float(lift_height),
+                        "min_lift_h": float(min_lift_height),
+                    },
+                )
+            ]
+            reason = "closed_not_lifted_script_lift"
 
         elif phase == "closed":
             filtered = insert_candidates
@@ -415,5 +431,7 @@ class QSwitchSAC(SAC):
             debug[f"cand_{metric_label}"] = int(label in labels)
             debug[f"sel_{metric_label}"] = int(label == selected_label)
         self._push_debug(debug)
+
+        # print(f"[Q-SWITCH] Selected: {selected_label} (mode: {selection_mode})")
 
         return selected_action, selected_buffer_action

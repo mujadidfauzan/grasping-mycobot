@@ -45,13 +45,13 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         frame_skip: int = 1,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         close_distance: float = 0.01,
-        close_angle_deg: float | None = None,
+        close_angle_deg: float = 10.0,
         release_distance: float = 0.01,
         release_angle_deg: float = 10.0,
         success_steps_required: int = 5,
         success_distance: float = 0.01,
         success_angle_deg: float = 10.0,
-        her_success_reward: float = 100.0,
+        her_success_reward: float = 10.0,
         her_failure_reward: float = -1.0,
         max_episode_steps: int = 500,
         terminate_lost_object_distance: float = 0.08,
@@ -76,7 +76,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         object_y_range: tuple[float, float] = (-0.12, 0.12),
         object_z: float = 0.025,
         object_yaw_range: tuple[float, float] = (-np.pi / 4.0, np.pi / 4.0),
-        target_height_above_place: float = 0.05,
+        target_height_above_place: float = 0.02,
         target_x_range: tuple[float, float] = (0.18, 0.27),
         target_y_range: tuple[float, float] = (-0.12, 0.12),
         target_place_z: float = 0.0,
@@ -776,6 +776,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
 
     def _get_desired_goal(self) -> np.ndarray:
         target_pos, target_quat = self._get_target_pose()
+        target_pos[2] = 0.07
         return self._goal_from_pose(target_pos, target_quat)
 
     def _goal_success_mask(
@@ -802,6 +803,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         )
         dot = np.abs(np.sum(achieved_quat * desired_quat, axis=1))
         angle_error = 2.0 * np.arccos(np.clip(dot, -1.0, 1.0))
+        # print(f"Pos Error : {pos_error}, Angle Error : {angle_error}", flush=True)
         success = np.logical_and(
             pos_error < self._success_distance,
             angle_error < self._success_angle_rad,
@@ -815,6 +817,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         info: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> np.ndarray | float:
         del info
+        # print(f"Achieved Goal : {achieved_goal}, Desired Goal : {desired_goal}")
         achieved_goal_arr = np.asarray(achieved_goal, dtype=np.float64)
         single = achieved_goal_arr.ndim == 1
         success = self._goal_success_mask(achieved_goal_arr, desired_goal)
@@ -841,17 +844,17 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             self.gripper_phase = "closed"
             event = "close_near_object"
 
-        if self.gripper_phase == "closed" and (
-            bool(metrics["target_pose_aligned"])
-            or (
-                float(metrics["target_dist"]) <= self._release_distance
-                and float(metrics["target_angle"]) <= self._release_angle_rad
-            )
-        ):
-            self.gripper_phase = "released"
-            self.release_steps = 0
-            self.release_event_count += 1
-            event = "release_on_target_align"
+        # if self.gripper_phase == "closed" and (
+        #     bool(metrics["target_pose_aligned"])
+        #     or (
+        #         float(metrics["target_dist"]) <= self._release_distance
+        #         and float(metrics["target_angle"]) <= self._release_angle_rad
+        #     )
+        # ):
+        #     self.gripper_phase = "released"
+        #     self.release_steps = 0
+        #     self.release_event_count += 1
+        #     event = "release_on_target_align"
 
         self.last_manual_event = event
         return event
@@ -926,6 +929,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
 
     def step(self, action):
         self.current_step += 1
+        # print(f"Step : {self.current_step }")
         pre_metrics = self._task_metrics()
         manual_event = self._update_manual_gripper_phase(pre_metrics)
         action, target_ctrl, _ik_result = self._ik_action_to_target_ctrl(action)
@@ -945,6 +949,10 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
 
         metrics = self._task_metrics()
         target_pose_aligned = bool(metrics["target_pose_aligned"])
+        # print(
+        #     f"Object-Target Dist: {metrics['target_dist']:.4f}, Angle: {np.rad2deg(metrics['target_angle']):.2f} deg, Pose Aligned: {target_pose_aligned}, Manual Event: {manual_event}"
+        # )
+        # print(f"Objek pos {metrics['obj_pos']}, Target pos {metrics['target_pos']}")
         if target_pose_aligned:
             self.success_counter += 1
         else:
@@ -960,8 +968,12 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             and float(metrics["ee_obj_dist"]) >= self._terminate_lost_object_distance
             and not target_pose_aligned
         )
-        terminated = terminated_success or terminated_lost_object
+        terminated = terminated_lost_object
+        # print(
+        #     f"Terminated Lost Object: {terminated_lost_object} or Terminated Success: {terminated_success}"
+        # )
         truncated = self.current_step >= self.max_episode_steps
+        # print(f"Truncated: {truncated}")
         reward_info.update(
             {
                 "terminated_success": int(terminated_success),
@@ -996,9 +1008,62 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         her_sparse_reward = float(
             self.compute_reward(self._get_achieved_goal(), self._get_desired_goal(), {})
         )
+        # print(f"HER Sparse Reward: {her_sparse_reward:.4f}")
         self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
         target_pose_aligned = bool(metrics["target_pose_aligned"])
-        return her_sparse_reward, {
+
+        ee_obj_dist = float(metrics["ee_obj_dist"])
+        ee_obj_angle = float(metrics["ee_obj_angle"])
+        gripper_closed = self.gripper_phase == "closed"
+
+        # ------------------------------
+        # Auxiliary dense shaping reward
+        # ------------------------------
+
+        # 1. Saat gripper masih open, dorong EE mendekati object.
+        # Max sekitar +0.20.
+        reward_grasp_approach = 0.0
+        if self.gripper_phase == "open":
+            reward_grasp_approach = 0.20 * (1.0 - float(np.tanh(ee_obj_dist / 0.05)))
+
+        # 2. Bonus kecil kalau sudah close dan masih dekat object.
+        # Jangan terlalu besar agar policy tidak puas hanya grasp.
+        reward_grasp_closed = 0.0
+        if gripper_closed and ee_obj_dist <= 0.04 and ee_obj_angle <= np.deg2rad(30):
+            reward_grasp_closed = 0.10
+
+        # 3. Reward lift agar bridge grasp -> insert lebih stabil.
+        # Max sekitar +0.30.
+        reward_lift = 0.0
+        if gripper_closed:
+            reward_lift = 0.30 * float(
+                np.clip(
+                    lift_height / max(self._target_height_above_place, 1e-9), 0.0, 1.0
+                )
+            )
+
+        # 4. Reward mendekati target setelah object sudah digenggam.
+        # Ini harus lebih dominan daripada reward grasping.
+        reward_target_position = 0.0
+        reward_target_orientation = 0.0
+        if gripper_closed:
+            reward_target_position = 0.80 * (1.0 - float(np.tanh(target_dist / 0.05)))
+            reward_target_orientation = 0.20 * (
+                1.0 - float(np.tanh(target_angle / 0.50))
+            )
+
+        # Total reward.
+        total_reward = (
+            her_sparse_reward
+            + reward_grasp_approach
+            + reward_grasp_closed
+            + reward_lift
+            + reward_target_position
+            + reward_target_orientation
+        )
+        self.best_object_target_dist = min(self.best_object_target_dist, target_dist)
+        target_pose_aligned = bool(metrics["target_pose_aligned"])
+        return total_reward, {
             "ee_object_dist": float(metrics["ee_obj_dist"]),
             "ee_object_rot_error": float(metrics["ee_obj_angle"]),
             "object_target_dist": target_dist,
@@ -1018,6 +1083,13 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
                 else int(bool(self._last_ik_result.success))
             ),
             "ik_failure_count": int(self._ik_failure_count),
+            "reward_total": float(total_reward),
+            "reward_grasp_approach": float(reward_grasp_approach),
+            "reward_grasp_closed": float(reward_grasp_closed),
+            "reward_lift": float(reward_lift),
+            "reward_target_position": float(reward_target_position),
+            "reward_target_orientation": float(reward_target_orientation),
+            "reward_her_sparse": float(her_sparse_reward),
         }
 
     def _get_obs_components(self) -> list[tuple[str, np.ndarray]]:
