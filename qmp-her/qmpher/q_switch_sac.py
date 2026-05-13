@@ -36,6 +36,7 @@ class QSwitchConfig:
     epsilon_random_action: bool = False
     q_aggregation: str = "min"
     debug_to_env: bool = True
+    target_candidate_starts: int = 300_000
 
 
 class QSwitchSAC(SAC):
@@ -89,6 +90,8 @@ class QSwitchSAC(SAC):
         config = self.qswitch_config
         if self.num_timesteps < learning_starts:
             return bool(config.include_target_during_warmup)
+        if self.num_timesteps < config.target_candidate_starts:
+            return False
         return bool(config.include_target_after_learning_starts)
 
     @staticmethod

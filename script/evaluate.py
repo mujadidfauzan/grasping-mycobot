@@ -529,7 +529,9 @@ def main() -> None:
         grasp_env_name = (
             args.grasp_env
             if args.grasp_env is not None
-            else ("GraspingEnvIK" if args.env == "InsertTargetEnvIK" else "GraspingEnvV2")
+            else (
+                "GraspingEnvIK" if args.env == "InsertTargetEnvIK" else "GraspingEnvV2"
+            )
         )
         env_kwargs.update(
             {

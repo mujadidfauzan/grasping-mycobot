@@ -87,7 +87,7 @@ class InsertTargetEnvIK(MujocoEnv, utils.EzPickle):
         control_interpolation_steps: int = 10,
         max_joint_ctrl_delta_deg: float = 5.0,
         smooth_cartesian_target: bool = True,
-        target_height_above_place: float = 0.05,
+        target_height_above_place: float = 0.03,
         target_x_range: tuple[float, float] = (0.18, 0.27),
         target_y_range: tuple[float, float] = (-0.12, 0.12),
         target_place_z: float = 0.0,

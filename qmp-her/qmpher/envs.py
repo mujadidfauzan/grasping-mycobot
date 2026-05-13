@@ -76,7 +76,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         object_y_range: tuple[float, float] = (-0.12, 0.12),
         object_z: float = 0.025,
         object_yaw_range: tuple[float, float] = (-np.pi / 4.0, np.pi / 4.0),
-        target_height_above_place: float = 0.02,
+        target_height_above_place: float = 0.05,
         target_x_range: tuple[float, float] = (0.18, 0.27),
         target_y_range: tuple[float, float] = (-0.12, 0.12),
         target_place_z: float = 0.0,
