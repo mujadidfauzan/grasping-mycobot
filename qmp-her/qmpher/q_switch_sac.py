@@ -32,11 +32,11 @@ class QSwitchConfig:
     include_zero_action: bool = False
     epsilon_initial: float = 0.20
     epsilon_final: float = 0.02
-    epsilon_decay_steps: int = 100_000
+    epsilon_decay_steps: int = 300_000
     epsilon_random_action: bool = False
     q_aggregation: str = "min"
     debug_to_env: bool = True
-    target_candidate_starts: int = 300_000
+    target_candidate_starts: int = 100_000
 
 
 class QSwitchSAC(SAC):

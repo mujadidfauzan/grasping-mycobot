@@ -776,7 +776,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
 
     def _get_desired_goal(self) -> np.ndarray:
         target_pos, target_quat = self._get_target_pose()
-        target_pos[2] = 0.07
+        # target_pos[2] = 0.07
         return self._goal_from_pose(target_pos, target_quat)
 
     def _goal_success_mask(
@@ -1202,6 +1202,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         place_pos, place_quat = self._get_place_site_pose()
         box_place_metrics = self._box_place_metrics()
         return {
+            "current_step": int(self.current_step),
             "active_object": self.active_obj_name,
             "ee_pos": metrics["ee_pos"],
             "ee_quat": metrics["ee_quat"],

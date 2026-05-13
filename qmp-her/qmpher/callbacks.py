@@ -6,11 +6,12 @@ from typing import Any
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
-from .utils import coerce_scalar, flatten_numeric_info
+from .utils import coerce_scalar
 
 KNOWN_SELECTION_LABELS = (
     "primitive_grasp",
     "primitive_insert",
+    "script_lift",
     "target_policy",
     "random_action",
     "zero_action",
@@ -19,18 +20,61 @@ KNOWN_SELECTION_LABELS = (
 SHORT_LABELS = {
     "primitive_grasp": "pg",
     "primitive_insert": "pi",
+    "script_lift": "lift",
     "target_policy": "tp",
     "random_action": "rand",
     "zero_action": "zero",
 }
+
+ENV_METRICS = (
+    ("ee_object_dist", "task/ee_obj_d"),
+    ("object_target_dist", "task/obj_tgt_d"),
+    ("object_target_angle_rad", "task/obj_tgt_ang"),
+    ("lift_height", "task/lift_h"),
+    ("lift_progress", "task/lift_p"),
+    ("target_pose_aligned", "task/aligned"),
+    ("success_counter", "task/succ_cnt"),
+    ("terminated_success", "ep/term_succ"),
+    ("terminated_lost_object", "ep/term_lost"),
+    ("gripper_closed", "grip/closed"),
+    ("ik_success", "ik/success"),
+    ("ik_failure_count", "ik/fail_cnt"),
+    ("reward_total", "rew/total"),
+    ("reward_her_sparse", "rew/her"),
+    ("reward_grasp_approach", "rew/grasp_app"),
+    ("reward_grasp_closed", "rew/grasp_cls"),
+    ("reward_lift", "rew/lift"),
+    ("reward_target_position", "rew/tgt_pos"),
+    ("reward_target_orientation", "rew/tgt_ori"),
+)
+
+QSWITCH_METRICS = (
+    ("enabled", "qs/en"),
+    ("num_candidates", "qs/n_cand"),
+    ("selected_q", "qs/sel_q"),
+    ("epsilon", "qs/eps"),
+    ("target_included", "qs/tp_in"),
+)
+
+PHASE_FILTER_METRICS = (
+    ("lift_h", "qs/pf_lift_h"),
+    ("before", "qs/pf_before"),
+    ("after", "qs/pf_after"),
+)
 
 
 def _safe_metric_label(label: str) -> str:
     return SHORT_LABELS.get(str(label), str(label).replace("/", "_").replace(" ", "_"))
 
 
+def _append_metric(metrics: dict[str, list[float]], key: str, value: Any) -> None:
+    scalar = coerce_scalar(value)
+    if scalar is not None:
+        metrics.setdefault(key, []).append(scalar)
+
+
 class QSwitchInfoCallback(BaseCallback):
-    """Log q-switch and manual gripper metrics from env info dicts."""
+    """Log a compact, non-duplicated subset of env and q-switch metrics."""
 
     def __init__(self, log_freq: int = 1000, verbose: int = 0):
         super().__init__(verbose=verbose)
@@ -48,15 +92,20 @@ class QSwitchInfoCallback(BaseCallback):
         for info in infos:
             if not isinstance(info, Mapping):
                 continue
-            flat = flatten_numeric_info(info)
+
+            for source_key, log_key in ENV_METRICS:
+                _append_metric(metrics, log_key, info.get(source_key))
+
             qswitch = info.get("qswitch")
             if isinstance(qswitch, Mapping):
-                flat.update(
-                    {
-                        f"qswitch/{key}": value
-                        for key, value in flatten_numeric_info(qswitch).items()
-                    }
-                )
+                for source_key, log_key in QSWITCH_METRICS:
+                    _append_metric(metrics, log_key, qswitch.get(source_key))
+
+                phase_filter = qswitch.get("pf")
+                if isinstance(phase_filter, Mapping):
+                    for source_key, log_key in PHASE_FILTER_METRICS:
+                        _append_metric(metrics, log_key, phase_filter.get(source_key))
+
                 selected_label = qswitch.get("selected_label")
                 candidate_labels = qswitch.get("candidate_labels", [])
                 label_set = set(KNOWN_SELECTION_LABELS)
@@ -67,18 +116,19 @@ class QSwitchInfoCallback(BaseCallback):
 
                 for label in sorted(label_set):
                     safe_label = _safe_metric_label(label)
-                    flat[f"qswitch/sel_rate/{safe_label}"] = float(
-                        isinstance(selected_label, str) and selected_label == label
+                    _append_metric(
+                        metrics,
+                        f"qs/cand/{safe_label}",
+                        float(
+                            isinstance(candidate_labels, (list, tuple))
+                            and label in candidate_labels
+                        ),
                     )
-                    flat[f"qswitch/cand_rate/{safe_label}"] = float(
-                        isinstance(candidate_labels, (list, tuple))
-                        and label in candidate_labels
+                    _append_metric(
+                        metrics,
+                        f"qs/sel/{safe_label}",
+                        float(isinstance(selected_label, str) and selected_label == label),
                     )
-
-            for key, value in flat.items():
-                scalar = coerce_scalar(value)
-                if scalar is not None:
-                    metrics.setdefault(key, []).append(scalar)
 
         for key, values in metrics.items():
             if values:

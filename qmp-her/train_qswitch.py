@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from gymnasium import Wrapper
 from torch import nn
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -17,6 +19,11 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from qmpher.utils import resolve_repo_path
+
+try:
+    import cv2
+except ModuleNotFoundError:
+    cv2 = None
 
 DEFAULT_XML = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 DEFAULT_GRASP_XML = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
@@ -32,6 +39,128 @@ POLICY_KWARGS = {
     },
     "activation_fn": nn.ReLU,
 }
+
+
+SHORT_LABELS = {
+    "primitive_grasp": "pg",
+    "primitive_insert": "pi",
+    "script_lift": "lift",
+    "target_policy": "tp",
+    "random_action": "rand",
+    "zero_action": "zero",
+}
+
+
+def _coerce_float(value) -> float | None:
+    if isinstance(value, (str, bytes)):
+        return None
+    try:
+        scalar = float(np.asarray(value).reshape(()))
+    except Exception:
+        return None
+    return scalar if np.isfinite(scalar) else None
+
+
+def _short_label(label: object) -> str:
+    label = str(label)
+    return SHORT_LABELS.get(label, label.replace("primitive_", "p_")[:12])
+
+
+class QSwitchVideoOverlayWrapper(Wrapper):
+    """Draw compact Q-switch diagnostics on recorded rgb_array frames."""
+
+    def render(self):
+        frame = self.env.render()
+        if (
+            frame is None
+            or cv2 is None
+            or getattr(self, "render_mode", None) != "rgb_array"
+        ):
+            return frame
+
+        debug_state_getter = getattr(self.unwrapped, "get_debug_state", None)
+        if not callable(debug_state_getter):
+            return frame
+
+        try:
+            debug_state = dict(debug_state_getter())
+        except Exception:
+            return frame
+
+        lines = self._build_overlay_lines(debug_state)
+        if not lines:
+            return frame
+
+        return self._draw_overlay(np.array(frame, copy=True), lines)
+
+    def _build_overlay_lines(self, debug_state: Mapping) -> list[str]:
+        lines: list[str] = []
+
+        step = _coerce_float(debug_state.get("current_step"))
+        phase = debug_state.get("manual_gripper_phase")
+        if step is not None:
+            lines.append(f"step {int(step)} | phase {phase}")
+        elif isinstance(phase, str):
+            lines.append(f"phase {phase}")
+
+        ee_obj_dist = _coerce_float(debug_state.get("ee_obj_dist"))
+        obj_target_dist = _coerce_float(debug_state.get("obj_target_dist"))
+        lift_height = _coerce_float(debug_state.get("lift_height"))
+        if ee_obj_dist is not None or obj_target_dist is not None:
+            ee_text = "n/a" if ee_obj_dist is None else f"{ee_obj_dist:.3f}"
+            tgt_text = "n/a" if obj_target_dist is None else f"{obj_target_dist:.3f}"
+            lines.append(f"ee-obj {ee_text} m | obj-tgt {tgt_text} m")
+        if lift_height is not None:
+            lines.append(f"lift {lift_height:.3f} m")
+
+        qswitch = debug_state.get("qswitch")
+        if isinstance(qswitch, Mapping):
+            selected = qswitch.get("selected_label", "n/a")
+            lines.append(f"selected {_short_label(selected)}")
+
+            labels = qswitch.get("candidate_labels", [])
+            q_values = qswitch.get("candidate_q_values", [])
+            if isinstance(labels, (list, tuple)) and isinstance(q_values, (list, tuple)):
+                lines.append("candidate q:")
+                for label, q_value in zip(labels, q_values):
+                    q_scalar = _coerce_float(q_value)
+                    q_part = "nan" if q_scalar is None else f"{q_scalar:+.2f}"
+                    marker = "*" if str(label) == str(selected) else " "
+                    lines.append(f"{marker}{_short_label(label)} q {q_part}")
+
+        return lines
+
+    @staticmethod
+    def _draw_overlay(frame: np.ndarray, lines: list[str]) -> np.ndarray:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.48
+        thickness = 1
+        line_height = 20
+        x = 10
+        y = 22
+
+        max_width = 0
+        for line in lines:
+            (width, _height), _baseline = cv2.getTextSize(
+                line, font, font_scale, thickness
+            )
+            max_width = max(max_width, width)
+
+        box_height = line_height * len(lines) + 10
+        cv2.rectangle(frame, (6, 6), (x + max_width + 10, box_height), (0, 0, 0), -1)
+        for line in lines:
+            cv2.putText(
+                frame,
+                line,
+                (x, y),
+                font,
+                font_scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA,
+            )
+            y += line_height
+        return frame
 
 
 def _range_arg(values: list[float]) -> tuple[float, float]:
@@ -165,6 +294,8 @@ def build_env(args: argparse.Namespace, videos_dir: Path, name_prefix: str):
             release_angle_deg=args.manual_release_angle_deg,
             success_steps_required=args.success_steps_required,
         )
+        if record_video:
+            env = QSwitchVideoOverlayWrapper(env)
         return Monitor(env)
 
     env = DummyVecEnv([_make_env])

@@ -1,3 +1,4 @@
+from .end_to_end_insert_env import EndToEndInsertEnv
 from .grasping_env import GraspingEnv
 from .grasping_env_ik import GraspingEnvIK
 from .grasping_env_v1 import GraspingEnvV1
@@ -10,6 +11,7 @@ from .place_target_env import PlaceTargetEnv
 from .reaching_env import ReachingEnv, ReachingEnvIK
 
 __all__ = [
+    "EndToEndInsertEnv",
     "GraspingEnv",
     "GraspingEnvIK",
     "GraspingEnvV1",

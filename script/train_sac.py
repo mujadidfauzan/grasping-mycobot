@@ -19,6 +19,7 @@ except ModuleNotFoundError:
     cv2 = None
 
 from source.envs import (  # GraspingEnvV3,; ReachingEnv,
+    EndToEndInsertEnv,
     GraspingEnv,
     GraspingEnvIK,
     GraspingEnvV1,
@@ -32,6 +33,7 @@ from source.envs import (  # GraspingEnvV3,; ReachingEnv,
 )
 
 ENV_REGISTRY = {
+    "EndToEndInsertEnv": EndToEndInsertEnv,
     "GraspingEnv": GraspingEnv,
     "GraspingEnvIK": GraspingEnvIK,
     "GraspingEnvV1": GraspingEnvV1,
@@ -51,6 +53,7 @@ OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 REACHING_XML_PATH = PROJECT_ROOT / "source" / "robot" / "reaching.xml"
 DEFAULT_XML_BY_ENV = {
+    "EndToEndInsertEnv": OBJECT_PLACE_XML_PATH,
     "GraspingEnv": OBJECT_LIFT_XML_PATH,
     "GraspingEnvIK": OBJECT_LIFT_XML_PATH,
     "GraspingEnvV1": OBJECT_LIFT_XML_PATH,
@@ -121,6 +124,10 @@ class DebugVideoOverlayWrapper(Wrapper):
         if "active_object" in debug_state:
             lines.append(f"object: {debug_state['active_object']}")
 
+        phase = debug_state.get("phase")
+        if isinstance(phase, str):
+            lines.append(f"phase: {phase}")
+
         sampled_site_pos = self._format_vec3(debug_state.get("sampled_target_site_pos"))
         if sampled_site_pos is not None:
             lines.append(f"target site xyz: {sampled_site_pos}")
@@ -174,6 +181,14 @@ class DebugVideoOverlayWrapper(Wrapper):
             grasp_latched_value = _coerce_scalar_metric(grasp_latched)
             if grasp_latched_value is not None:
                 lines.append("grasp: closed" if grasp_latched_value else "grasp: open")
+
+        release_latched = debug_state.get("release_latched")
+        if isinstance(release_latched, (bool, np.bool_)):
+            lines.append("release: yes" if release_latched else "release: no")
+
+        zero_action_reason = debug_state.get("last_zero_action_reason")
+        if isinstance(zero_action_reason, str) and zero_action_reason != "none":
+            lines.append(f"zero action: {zero_action_reason}")
 
         target_reached = debug_state.get("target_reached")
         if isinstance(target_reached, (bool, np.bool_)):
@@ -473,7 +488,7 @@ def parse_args():
     parser.add_argument(
         "--env",
         choices=sorted(ENV_REGISTRY.keys()),
-        default="GraspingEnv",
+        default="EndToEndInsertEnv",
         help="Environment name from ENV_REGISTRY.",
     )
     parser.add_argument(
@@ -630,6 +645,60 @@ def parse_args():
         default=0.02,
         help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
+    parser.add_argument(
+        "--e2e-grasp-distance",
+        type=float,
+        default=0.01,
+        help="For EndToEndInsertEnv: EE-object distance threshold before the zero-action grasp pause.",
+    )
+    parser.add_argument(
+        "--e2e-grasp-angle-deg",
+        type=float,
+        default=10.0,
+        help="For EndToEndInsertEnv: EE-object orientation threshold before grasp.",
+    )
+    parser.add_argument(
+        "--e2e-release-distance",
+        type=float,
+        default=0.01,
+        help="For EndToEndInsertEnv: object-target distance threshold before the zero-action release pause.",
+    )
+    parser.add_argument(
+        "--e2e-release-angle-deg",
+        type=float,
+        default=10.0,
+        help="For EndToEndInsertEnv: object-target orientation threshold before release.",
+    )
+    parser.add_argument(
+        "--e2e-release-height",
+        type=float,
+        default=0.04,
+        help="For EndToEndInsertEnv: release target height above the active place site.",
+    )
+    parser.add_argument(
+        "--e2e-pause-steps-before-grasp",
+        type=int,
+        default=1,
+        help="For EndToEndInsertEnv: zero-action steps before closing the gripper.",
+    )
+    parser.add_argument(
+        "--e2e-pause-steps-before-release",
+        type=int,
+        default=1,
+        help="For EndToEndInsertEnv: zero-action steps before opening the gripper.",
+    )
+    parser.add_argument(
+        "--e2e-grasp-bonus",
+        type=float,
+        default=8.0,
+        help="For EndToEndInsertEnv: one-time reward bonus when grasp closes.",
+    )
+    parser.add_argument(
+        "--e2e-release-bonus",
+        type=float,
+        default=30.0,
+        help="For EndToEndInsertEnv: one-time reward bonus when release opens.",
+    )
     return parser.parse_args()
 
 
@@ -708,6 +777,20 @@ def build_env(args, videos_dir: Path, name_prefix: str):
             {
                 "gripper_assist_steps": args.gripper_assist_steps,
                 "gripper_action_scale": args.gripper_action_scale,
+            }
+        )
+    elif args.env == "EndToEndInsertEnv":
+        env_kwargs.update(
+            {
+                "grasp_distance": args.e2e_grasp_distance,
+                "grasp_angle_deg": args.e2e_grasp_angle_deg,
+                "release_distance": args.e2e_release_distance,
+                "release_angle_deg": args.e2e_release_angle_deg,
+                "release_height_above_place": args.e2e_release_height,
+                "pause_steps_before_grasp": args.e2e_pause_steps_before_grasp,
+                "pause_steps_before_release": args.e2e_pause_steps_before_release,
+                "reward_grasp_bonus": args.e2e_grasp_bonus,
+                "reward_release_bonus": args.e2e_release_bonus,
             }
         )
     elif args.env in {
