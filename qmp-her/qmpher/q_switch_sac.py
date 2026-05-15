@@ -36,7 +36,12 @@ class QSwitchConfig:
     epsilon_random_action: bool = False
     q_aggregation: str = "min"
     debug_to_env: bool = True
-    target_candidate_starts: int = 100_000
+    target_candidate_starts: int = 1_000_000
+    target_phase_gate: bool = True
+    target_min_lift_height: float = 0.035
+    target_q_margin: float = 0.0
+    q_value_abs_limit: float = 5_000.0
+    use_target_critic_for_selection: bool = True
 
 
 class QSwitchSAC(SAC):
@@ -161,7 +166,7 @@ class QSwitchSAC(SAC):
         except Exception:
             lift_height = 0.0
 
-        min_lift_height = 0.035
+        min_lift_height = float(self.qswitch_config.target_min_lift_height)
 
         grasp_candidates = [
             c for c in candidates if self._candidate_has_label(c, "primitive_grasp")
@@ -213,9 +218,60 @@ class QSwitchSAC(SAC):
             "reason": reason,
             "phase": phase,
             "lift_h": float(lift_height),
-            "min_lift_h": 0.0,
+            "min_lift_h": float(min_lift_height),
             "before": int(len(candidates)),
             "after": int(len(filtered)),
+        }
+
+    def _target_candidate_phase_status(
+        self,
+        *,
+        target_env: Any,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Return whether the learned actor may compete with phase primitives.
+
+        The actor is trained to maximize this same critic. If it is allowed to
+        compete too early, it can exploit critic overestimation and steal the
+        rollout before it has learned the grasp/lift prerequisites. The phase
+        gate keeps primitive behavior as the data source until the task state is
+        semantically ready for target insertion behavior.
+        """
+        config = self.qswitch_config
+        env = unwrap_env(target_env)
+        phase = str(getattr(env, "gripper_phase", "open"))
+        lift_height = 0.0
+        try:
+            metrics = env._task_metrics()
+            lift_height = float(metrics.get("lift_height", 0.0))
+        except Exception:
+            lift_height = 0.0
+
+        if not config.target_phase_gate:
+            allowed = True
+            reason = "phase_gate_disabled"
+        elif phase == "open":
+            allowed = False
+            reason = "open_use_grasp_primitive"
+        elif phase == "closed" and lift_height < config.target_min_lift_height:
+            allowed = False
+            reason = "closed_wait_for_lift"
+        elif phase == "closed":
+            allowed = True
+            reason = "closed_lifted"
+        elif phase == "released":
+            allowed = False
+            reason = "released_no_target_compete"
+        else:
+            allowed = False
+            reason = f"unknown_phase_{phase}"
+
+        return allowed, {
+            "enabled": int(config.target_phase_gate),
+            "allowed": int(allowed),
+            "reason": reason,
+            "phase": phase,
+            "lift_h": float(lift_height),
+            "min_lift_h": float(config.target_min_lift_height),
         }
 
     def _candidate_q_values(
@@ -252,7 +308,12 @@ class QSwitchSAC(SAC):
             #   obs_tensor      : [num_candidates, obs_dim or dict obs]
             #   action_tensor   : [num_candidates, action_dim]
             # The critic returns Q1 and Q2, each [num_candidates, 1].
-            q_values = self.policy.critic(obs_tensor, action_tensor)
+            critic = self.policy.critic
+            if self.qswitch_config.use_target_critic_for_selection and hasattr(
+                self.policy, "critic_target"
+            ):
+                critic = self.policy.critic_target
+            q_values = critic(obs_tensor, action_tensor)
             q_stack = th.cat([q.reshape(-1, 1) for q in q_values], dim=1)
             if self.qswitch_config.q_aggregation == "mean":
                 selected_q = q_stack.mean(dim=1)
@@ -261,6 +322,30 @@ class QSwitchSAC(SAC):
             else:
                 selected_q = q_stack.min(dim=1).values
         return selected_q.detach().cpu().numpy().astype(np.float64)
+
+    def _best_non_target_index(
+        self,
+        *,
+        labels: list[str],
+        q_values: np.ndarray,
+    ) -> int | None:
+        candidate_indices = [
+            index
+            for index, label in enumerate(labels)
+            if label != "target_policy" and np.isfinite(q_values[index])
+        ]
+        if not candidate_indices:
+            candidate_indices = [
+                index for index, label in enumerate(labels) if label != "target_policy"
+            ]
+        if not candidate_indices:
+            return None
+        return max(
+            candidate_indices,
+            key=lambda index: q_values[index]
+            if np.isfinite(q_values[index])
+            else -np.inf,
+        )
 
     def _push_debug(self, debug: dict[str, Any]) -> None:
         self.last_qswitch_debug = debug
@@ -343,8 +428,13 @@ class QSwitchSAC(SAC):
         # After warmup, include the actor from the target SAC policy as another
         # candidate. During warmup the selector can be forced to rely only on
         # primitives unless no primitive candidate is available.
-        include_target = self._should_include_target(learning_starts)
-        if include_target or not candidates:
+        target_step_allowed = self._should_include_target(learning_starts)
+        target_phase_allowed, target_phase_debug = self._target_candidate_phase_status(
+            target_env=target_env
+        )
+        include_target = target_step_allowed and target_phase_allowed
+        target_forced_fallback = not candidates
+        if include_target or target_forced_fallback:
             candidates.append(
                 PrimitiveCandidate(
                     label="target_policy",
@@ -395,7 +485,38 @@ class QSwitchSAC(SAC):
             # Normal Q-switch path: score every candidate under the same state,
             # then execute the label/action with maximal predicted return.
             q_values = self._candidate_q_values(obs=obs, candidate_actions=actions)
-            selected_index = int(np.argmax(q_values))
+            finite_q = np.isfinite(q_values)
+            q_abs_max = (
+                float(np.max(np.abs(q_values[finite_q]))) if np.any(finite_q) else np.inf
+            )
+            q_unstable = bool(
+                not np.all(finite_q) or q_abs_max > config.q_value_abs_limit
+            )
+            if np.any(finite_q):
+                ranked_q_values = np.where(finite_q, q_values, -np.inf)
+                selected_index = int(np.argmax(ranked_q_values))
+            else:
+                selected_index = 0
+                selection_mode = "critic_all_nonfinite_fallback"
+
+            selected_label = labels[selected_index]
+            if selected_label == "target_policy":
+                non_target_index = self._best_non_target_index(
+                    labels=labels,
+                    q_values=q_values,
+                )
+                if q_unstable and non_target_index is not None:
+                    selected_index = int(non_target_index)
+                    selection_mode = "critic_unstable_primitive_fallback"
+                elif (
+                    non_target_index is not None
+                    and config.target_q_margin > 0.0
+                    and np.isfinite(q_values[non_target_index])
+                    and q_values[selected_index]
+                    < q_values[non_target_index] + config.target_q_margin
+                ):
+                    selected_index = int(non_target_index)
+                    selection_mode = "target_margin_primitive_fallback"
             selected_action = actions[selected_index]
             selected_label = labels[selected_index]
 
@@ -418,6 +539,7 @@ class QSwitchSAC(SAC):
             "prim_before_pf": primitive_labels_before_phase_filter,
             "prim_after_pf": primitive_labels_after_phase_filter,
             "pf": phase_filter_debug,
+            "tp_phase": target_phase_debug,
             "selected_index": int(selected_index),
             "selected_label": selected_label,
             "selected_q": selected_q,
@@ -425,7 +547,24 @@ class QSwitchSAC(SAC):
             "selection_mode": selection_mode,
             "num_timesteps": int(self.num_timesteps),
             "learning_starts": int(learning_starts),
-            "target_included": int(include_target),
+            "target_step_allowed": int(target_step_allowed),
+            "target_phase_allowed": int(target_phase_allowed),
+            "target_forced_fallback": int(target_forced_fallback),
+            "target_included": int("target_policy" in labels),
+            "q_abs_max": float(
+                np.nanmax(np.abs(q_values))
+                if np.any(np.isfinite(q_values))
+                else np.inf
+            ),
+            "q_unstable": int(
+                (not np.all(np.isfinite(q_values)))
+                or (
+                    np.any(np.isfinite(q_values))
+                    and np.nanmax(np.abs(q_values)) > config.q_value_abs_limit
+                )
+            ),
+            "q_value_abs_limit": float(config.q_value_abs_limit),
+            "target_q_margin": float(config.target_q_margin),
         }
         for label in sorted(
             set(labels + [selected_label, "random_action", "target_policy"])

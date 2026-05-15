@@ -72,15 +72,15 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         control_interpolation_steps: int = 10,
         max_joint_ctrl_delta_deg: float = 5.0,
         smooth_cartesian_target: bool = True,
-        object_x_range: tuple[float, float] = (0.15, 0.27),
-        object_y_range: tuple[float, float] = (-0.12, 0.12),
+        object_x_range: tuple[float, float] = (0.18, 0.27),
+        object_y_range: tuple[float, float] = (-0.14, 0.14),
         object_z: float = 0.025,
         object_yaw_range: tuple[float, float] = (-np.pi / 4.0, np.pi / 4.0),
-        target_height_above_place: float = 0.05,
+        target_height_above_place: float = 0.035,
         target_x_range: tuple[float, float] = (0.18, 0.27),
-        target_y_range: tuple[float, float] = (-0.12, 0.12),
+        target_y_range: tuple[float, float] = (-0.14, 0.14),
         target_place_z: float = 0.0,
-        target_place_yaw_range: tuple[float, float] = (-np.pi / 6.0, np.pi / 6.0),
+        target_place_yaw_range: tuple[float, float] = (-np.pi / 4.0, np.pi / 4.0),
         min_initial_object_target_distance: float = 0.08,
         target_resample_attempts: int = 100,
         reset_settle_steps: int = 20,
@@ -968,7 +968,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
             and float(metrics["ee_obj_dist"]) >= self._terminate_lost_object_distance
             and not target_pose_aligned
         )
-        terminated = terminated_lost_object
+        terminated = terminated_success or terminated_lost_object
         # print(
         #     f"Terminated Lost Object: {terminated_lost_object} or Terminated Success: {terminated_success}"
         # )

@@ -366,9 +366,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
     def _name2id(self, obj_type: mujoco.mjtObj, name: str) -> int:
         return int(mujoco.mj_name2id(self.model, obj_type, name))
 
-    def _require_named_id(
-        self, obj_type: mujoco.mjtObj, name: str, label: str
-    ) -> int:
+    def _require_named_id(self, obj_type: mujoco.mjtObj, name: str, label: str) -> int:
         obj_id = self._name2id(obj_type, name)
         if obj_id < 0:
             raise ValueError(f"Missing {label} `{name}` in XML scene.")
@@ -696,7 +694,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
 
         target_ctrl = self.data.ctrl.copy()
         effective_action = action.copy()
-
+        print(f"Phase: {self.phase}, Grasp Ready: {self.last_grasp_ready}, ")
         if self.phase == "approach":
             self._set_open_gripper_target(target_ctrl)
             if self.last_grasp_ready:
@@ -1049,8 +1047,9 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         )
         self.applied_target_place_yaw = float(
             self._quat_to_yaw(
-                self.data.body(str(self._get_active_place_info()["body_name"]))
-                .xquat.copy()
+                self.data.body(
+                    str(self._get_active_place_info()["body_name"])
+                ).xquat.copy()
             )
         )
 
@@ -1152,16 +1151,10 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             self._pause_steps_before_release
         )
         config["action"]["gripper_open_target"] = self._gripper_open_target.tolist()
-        config["action"]["gripper_closed_target"] = (
-            self._gripper_closed_target.tolist()
-        )
+        config["action"]["gripper_closed_target"] = self._gripper_closed_target.tolist()
         config["reward"]["params"]["release_reward_mode"] = "release_bonus_only"
-        config["reward"]["params"][
-            "object_target_reward_active_from_reset"
-        ] = True
-        config["reward"]["params"][
-            "ee_object_reward_active_until_grasp"
-        ] = True
+        config["reward"]["params"]["object_target_reward_active_from_reset"] = True
+        config["reward"]["params"]["ee_object_reward_active_until_grasp"] = True
         config["reward"]["params"]["position_tanh_scale"] = float(
             self._position_tanh_scale
         )
@@ -1197,8 +1190,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         obj_pos, obj_quat = self._get_active_obj_pose()
         target_pos, target_quat = self._get_release_target_pose()
         target_place_quat = self._normalize_quat(
-            self.data.body(str(self._get_active_place_info()["body_name"]))
-            .xquat.copy()
+            self.data.body(str(self._get_active_place_info()["body_name"])).xquat.copy()
         )
 
         return {

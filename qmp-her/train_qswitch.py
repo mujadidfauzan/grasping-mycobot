@@ -199,7 +199,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
-    parser.add_argument("--ent-coef", default="auto_0.01")
+    parser.add_argument("--ent-coef", default="0.01")
     parser.add_argument("--train-freq", type=int, default=1)
     parser.add_argument("--gradient-steps", type=int, default=1)
     parser.add_argument("--device", default="auto")
@@ -230,6 +230,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon-initial", type=float, default=0.20)
     parser.add_argument("--epsilon-final", type=float, default=0.02)
     parser.add_argument("--epsilon-decay-steps", type=int, default=100_000)
+    parser.add_argument(
+        "--target-candidate-starts",
+        type=int,
+        default=1_000_000,
+        help="First timestep where the learned target actor may enter Q-switch.",
+    )
+    parser.add_argument(
+        "--disable-target-phase-gate",
+        action="store_true",
+        help="Allow target actor to compete in every manual-gripper phase.",
+    )
+    parser.add_argument(
+        "--target-min-lift-height",
+        type=float,
+        default=0.035,
+        help="Minimum object lift before target actor can compete when gripper is closed.",
+    )
+    parser.add_argument(
+        "--target-q-margin",
+        type=float,
+        default=0.0,
+        help="Extra Q margin required before target actor can beat a primitive.",
+    )
+    parser.add_argument(
+        "--q-value-abs-limit",
+        type=float,
+        default=5_000.0,
+        help="Treat selector Q values above this magnitude as unstable.",
+    )
+    parser.add_argument(
+        "--selection-critic",
+        choices=["target", "online"],
+        default="target",
+        help="Critic network used to rank Q-switch candidates.",
+    )
     parser.add_argument("--include-target-during-warmup", action="store_true")
     parser.add_argument("--disable-target-after-warmup", action="store_true")
     parser.add_argument("--include-zero-action", action="store_true")
@@ -356,6 +391,12 @@ def build_qswitch_config(args: argparse.Namespace):
         epsilon_initial=args.epsilon_initial,
         epsilon_final=args.epsilon_final,
         epsilon_decay_steps=args.epsilon_decay_steps,
+        target_candidate_starts=args.target_candidate_starts,
+        target_phase_gate=not bool(args.disable_target_phase_gate),
+        target_min_lift_height=args.target_min_lift_height,
+        target_q_margin=args.target_q_margin,
+        q_value_abs_limit=args.q_value_abs_limit,
+        use_target_critic_for_selection=args.selection_critic == "target",
         # Penting: epsilon tidak boleh raw random action untuk IK 6D.
         # Epsilon hanya memilih random dari candidate yang sudah valid.
         epsilon_random_action=False,

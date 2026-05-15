@@ -4,12 +4,16 @@ import argparse
 import csv
 import math
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 OBJECT_LIFT_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_lift.xml"
 OBJECT_PLACE_XML_PATH = PROJECT_ROOT / "source" / "robot" / "object_place.xml"
 REACHING_XML_PATH = PROJECT_ROOT / "source" / "robot" / "reaching.xml"
@@ -162,12 +166,67 @@ def parse_args() -> argparse.Namespace:
         default=0.02,
         help="For InsertTargetEnv: target height above the XML place used by the place-above policy.",
     )
+    parser.add_argument(
+        "--e2e-grasp-distance",
+        type=float,
+        default=0.01,
+        help="For EndToEndInsertEnv: EE-object distance threshold before the zero-action grasp pause.",
+    )
+    parser.add_argument(
+        "--e2e-grasp-angle-deg",
+        type=float,
+        default=10.0,
+        help="For EndToEndInsertEnv: EE-object orientation threshold before grasp.",
+    )
+    parser.add_argument(
+        "--e2e-release-distance",
+        type=float,
+        default=0.01,
+        help="For EndToEndInsertEnv: object-target distance threshold before the zero-action release pause.",
+    )
+    parser.add_argument(
+        "--e2e-release-angle-deg",
+        type=float,
+        default=10.0,
+        help="For EndToEndInsertEnv: object-target orientation threshold before release.",
+    )
+    parser.add_argument(
+        "--e2e-release-height",
+        type=float,
+        default=0.04,
+        help="For EndToEndInsertEnv: release target height above the active place site.",
+    )
+    parser.add_argument(
+        "--e2e-pause-steps-before-grasp",
+        type=int,
+        default=1,
+        help="For EndToEndInsertEnv: zero-action steps before closing the gripper.",
+    )
+    parser.add_argument(
+        "--e2e-pause-steps-before-release",
+        type=int,
+        default=1,
+        help="For EndToEndInsertEnv: zero-action steps before opening the gripper.",
+    )
+    parser.add_argument(
+        "--e2e-grasp-bonus",
+        type=float,
+        default=8.0,
+        help="For EndToEndInsertEnv: one-time reward bonus when grasp closes.",
+    )
+    parser.add_argument(
+        "--e2e-release-bonus",
+        type=float,
+        default=30.0,
+        help="For EndToEndInsertEnv: one-time reward bonus when release opens.",
+    )
     return parser.parse_args()
 
 
 def resolve_env_names() -> list[str]:
 
     env_names = [
+        "EndToEndInsertEnv",
         "GraspingEnv",
         "GraspingEnvIK",
         "GraspingEnvV1",
@@ -186,6 +245,7 @@ def resolve_default_xml_path(env_name: str) -> Path:
     if env_name == "ReachingEnv":
         return REACHING_XML_PATH
     if env_name in {
+        "EndToEndInsertEnv",
         "InsertTargetEnv",
         "InsertTargetEnvIK",
         "PlaceTargetEnv",
@@ -474,6 +534,7 @@ def main() -> None:
 
     try:
         from source.envs import (
+            EndToEndInsertEnv,
             GraspingEnv,
             GraspingEnvIK,
             GraspingEnvV1,
@@ -492,6 +553,7 @@ def main() -> None:
         ) from exc
 
     env_registry = {
+        "EndToEndInsertEnv": EndToEndInsertEnv,
         "GraspingEnv": GraspingEnv,
         "GraspingEnvIK": GraspingEnvIK,
         "GraspingEnvV1": GraspingEnvV1,
@@ -519,6 +581,20 @@ def main() -> None:
     env_kwargs = {}
     if args.env == "GraspingEnvIK":
         env_kwargs["post_grasp_mode"] = args.post_grasp_mode
+    if args.env == "EndToEndInsertEnv":
+        env_kwargs.update(
+            {
+                "grasp_distance": args.e2e_grasp_distance,
+                "grasp_angle_deg": args.e2e_grasp_angle_deg,
+                "release_distance": args.e2e_release_distance,
+                "release_angle_deg": args.e2e_release_angle_deg,
+                "release_height_above_place": args.e2e_release_height,
+                "pause_steps_before_grasp": args.e2e_pause_steps_before_grasp,
+                "pause_steps_before_release": args.e2e_pause_steps_before_release,
+                "reward_grasp_bonus": args.e2e_grasp_bonus,
+                "reward_release_bonus": args.e2e_release_bonus,
+            }
+        )
     if args.env in {
         "InsertTargetEnv",
         "InsertTargetEnvIK",

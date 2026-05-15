@@ -54,12 +54,23 @@ QSWITCH_METRICS = (
     ("selected_q", "qs/sel_q"),
     ("epsilon", "qs/eps"),
     ("target_included", "qs/tp_in"),
+    ("target_step_allowed", "qs/tp_step_ok"),
+    ("target_phase_allowed", "qs/tp_phase_ok"),
+    ("target_forced_fallback", "qs/tp_fallback"),
+    ("q_abs_max", "qs/q_abs_max"),
+    ("q_unstable", "qs/q_unstable"),
 )
 
 PHASE_FILTER_METRICS = (
     ("lift_h", "qs/pf_lift_h"),
     ("before", "qs/pf_before"),
     ("after", "qs/pf_after"),
+)
+
+TARGET_PHASE_METRICS = (
+    ("allowed", "qs/tp_phase_allowed"),
+    ("lift_h", "qs/tp_lift_h"),
+    ("min_lift_h", "qs/tp_min_lift_h"),
 )
 
 
@@ -105,6 +116,11 @@ class QSwitchInfoCallback(BaseCallback):
                 if isinstance(phase_filter, Mapping):
                     for source_key, log_key in PHASE_FILTER_METRICS:
                         _append_metric(metrics, log_key, phase_filter.get(source_key))
+
+                target_phase = qswitch.get("tp_phase")
+                if isinstance(target_phase, Mapping):
+                    for source_key, log_key in TARGET_PHASE_METRICS:
+                        _append_metric(metrics, log_key, target_phase.get(source_key))
 
                 selected_label = qswitch.get("selected_label")
                 candidate_labels = qswitch.get("candidate_labels", [])
