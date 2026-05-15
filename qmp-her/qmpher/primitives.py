@@ -6,12 +6,13 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .sync import sync_grasp_env_from_target
+from .sync import sync_grasp_env_from_target, sync_insert_env_from_target
 from .utils import ensure_project_root_on_path, resolve_repo_path, unwrap_env
 
 ensure_project_root_on_path()
 
 from source.envs.grasping_env_ik import GraspingEnvIK  # noqa: E402
+from source.envs.insert_target_env_ik import InsertTargetEnvIK  # noqa: E402
 
 
 @dataclass
@@ -60,21 +61,57 @@ class _LazySACModel:
 
 
 class InsertPrimitiveAdapter:
-    """Candidate action from an already trained InsertTargetEnvIK policy."""
+    """Candidate action from a trained InsertTargetEnvIK policy.
+
+    A hidden InsertTargetEnvIK is synchronized from the live QMP env before each
+    prediction. This keeps the insert policy on its original observation path
+    instead of relying on a hand-mirrored QMP observation layout.
+    """
 
     def __init__(
         self,
         *,
         model_path: str | Path,
+        xml_file: str | Path,
+        grasp_model_path: str | Path,
+        grasp_xml_file: str | Path,
         label: str = "primitive_insert",
         deterministic: bool = True,
         device: str = "auto",
+        env_kwargs: dict[str, Any] | None = None,
+        min_lift_height: float = 0.035,
         strict: bool = True,
     ):
         self.label = str(label)
+        self.xml_file = resolve_repo_path(xml_file)
+        self.grasp_model_path = resolve_repo_path(grasp_model_path)
+        self.grasp_xml_file = resolve_repo_path(grasp_xml_file)
         self.deterministic = bool(deterministic)
+        self.device = device
+        self.env_kwargs = dict(env_kwargs or {})
+        self.min_lift_height = float(min_lift_height)
         self.strict = bool(strict)
-        self._loader = _LazySACModel(model_path, device=device)
+        self._env: InsertTargetEnvIK | None = None
+        self._loader: _LazySACModel | None = None
+        self._model_path = resolve_repo_path(model_path)
+
+    def _ensure_loaded(self) -> tuple[Any, InsertTargetEnvIK]:
+        if self._env is None:
+            env_kwargs = {
+                "xml_file": str(self.xml_file),
+                "grasp_model_path": str(self.grasp_model_path),
+                "grasp_xml_file": str(self.grasp_xml_file),
+                "render_mode": None,
+            }
+            env_kwargs.update(self.env_kwargs)
+            self._env = InsertTargetEnvIK(**env_kwargs)
+            self._loader = _LazySACModel(
+                self._model_path,
+                env=self._env,
+                device=self.device,
+            )
+        assert self._loader is not None
+        return self._loader.get(), self._env
 
     def candidate_actions(
         self,
@@ -82,6 +119,7 @@ class InsertPrimitiveAdapter:
         current_obs: np.ndarray,
         target_env: Any,
     ) -> list[PrimitiveCandidate]:
+        del current_obs
         env = unwrap_env(target_env)
 
         # Insert primitive hanya valid setelah object sudah digenggam.
@@ -90,85 +128,27 @@ class InsertPrimitiveAdapter:
         if gripper_phase != "closed":
             return []
 
-        # Insert primitive juga hanya valid kalau object sudah cukup terangkat.
-        # Ini mencegah model insert menerima state OOD: object masih di meja.
-        # min_lift_height = (
-        #     0.035  # 3.5 cm relatif dari initial object z; boleh tuning nanti
-        # )
-
         try:
             metrics = env._task_metrics()
             lift_height = float(metrics.get("lift_height", 0.0))
         except Exception:
             lift_height = 0.0
 
-        # if lift_height < min_lift_height:
-        #     return []
+        if lift_height < self.min_lift_height:
+            return []
 
         try:
-            # print("\n" + "=" * 120, flush=True)
-            # print(
-            #     "[INSERT OBS DEBUG] "
-            #     f"qmp_step={getattr(env, 'current_step', -1)} "
-            #     f"phase={getattr(env, 'gripper_phase', 'n/a')} "
-            #     f"gripper_state={getattr(env, 'gripper_state', 'n/a')} "
-            #     f"current_obs_shape={np.asarray(current_obs).shape}",
-            #     flush=True,
-            # )
-
-            # try:
-            #     metrics = env._task_metrics()
-            #     print(
-            #         "[INSERT STATE DEBUG] "
-            #         f"obj_pos={np.round(metrics['obj_pos'], 5)} "
-            #         f"target_pos={np.round(metrics['target_pos'], 5)} "
-            #         f"obj_target_err={np.round(metrics['obj_target_pos_error'], 5)} "
-            #         f"target_dist={float(metrics['target_dist']):.6f} "
-            #         f"target_angle_deg={np.rad2deg(float(metrics['target_angle'])):.3f} "
-            #         f"ee_obj_dist={float(metrics['ee_obj_dist']):.6f} "
-            #         f"lift_h={float(metrics['lift_height']):.6f} "
-            #         f"aligned={int(metrics['target_pose_aligned'])}",
-            #         flush=True,
-            #     )
-            # except Exception as e:
-            #     print(f"[INSERT STATE DEBUG ERROR] {repr(e)}", flush=True)
-
-            # try:
-            #     start_idx = 0
-            #     for name, component in env._get_obs_components():
-            #         arr = np.asarray(component, dtype=np.float64).reshape(-1)
-            #         end_idx = start_idx + arr.size
-
-            #         print(
-            #             f"[INSERT OBS] idx={start_idx}:{end_idx} "
-            #             f"name={name} "
-            #             f"shape={arr.shape} "
-            #             f"value={np.array2string(arr, precision=5, suppress_small=True, threshold=np.inf, max_line_width=220)}",
-            #             flush=True,
-            #         )
-
-            #         start_idx = end_idx
-
-            #     print(
-            #         f"[INSERT OBS CHECK] "
-            #         f"component_total_len={start_idx} "
-            #         f"current_obs_len={np.asarray(current_obs).reshape(-1).shape[0]}",
-            #         flush=True,
-            #     )
-            # except Exception as e:
-            #     print(f"[INSERT OBS COMPONENT DEBUG ERROR] {repr(e)}", flush=True)
-
-            # print("=" * 120 + "\n", flush=True)
-            model = self._loader.get()
+            model, insert_env = self._ensure_loaded()
+            sync_insert_env_from_target(
+                target_env=env,
+                insert_env=insert_env,
+                target_object_name="box",
+            )
+            obs = insert_env._get_obs()
             action, _ = model.predict(
-                np.asarray(current_obs, dtype=np.float32),
+                obs,
                 deterministic=self.deterministic,
             )
-            # print(
-            #     "[INSERT ACTION DEBUG] "
-            #     f"action={np.array2string(np.asarray(action).reshape(-1), precision=5, suppress_small=True)}",
-            #     flush=True,
-            # )
         except Exception as exc:
             if self.strict:
                 raise
@@ -189,13 +169,18 @@ class InsertPrimitiveAdapter:
                 info={
                     "gripper_phase": gripper_phase,
                     "lift_height": lift_height,
-                    # "min_lift_height": min_lift_height,
+                    "min_lift_height": self.min_lift_height,
+                    "primitive_obs_shape": tuple(int(v) for v in obs.shape),
+                    "primitive_env": type(insert_env).__name__,
                 },
             )
         ]
 
     def close(self) -> None:
-        pass
+        if self._env is not None:
+            self._env.close()
+            self._env = None
+            self._loader = None
 
 
 class GraspPrimitiveAdapter:

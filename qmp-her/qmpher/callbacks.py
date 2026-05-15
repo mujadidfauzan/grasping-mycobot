@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import torch as th
+import torch.nn.functional as F
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -143,7 +145,9 @@ class QSwitchInfoCallback(BaseCallback):
                     _append_metric(
                         metrics,
                         f"qs/sel/{safe_label}",
-                        float(isinstance(selected_label, str) and selected_label == label),
+                        float(
+                            isinstance(selected_label, str) and selected_label == label
+                        ),
                     )
 
         for key, values in metrics.items():
@@ -151,6 +155,74 @@ class QSwitchInfoCallback(BaseCallback):
                 self.logger.record(f"custom/{key}", float(np.mean(values)))
 
         return True
+
+
+class QSwitchBCCallback(BaseCallback):
+    """Auxiliary behavior cloning update for the target actor.
+
+    This trains the SAC actor to imitate the current non-target teacher action
+    stored by QSwitchSAC: primitive_grasp, script_lift, or primitive_insert.
+    """
+
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose=verbose)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        config = getattr(self.model, "qswitch_config", None)
+        if config is None or not getattr(config, "bc_enabled", False):
+            return
+
+        if self.num_timesteps < int(config.bc_start_steps):
+            return
+
+        coef = float(self.model.bc_coef())
+        if coef <= 0.0:
+            return
+
+        batch_size = int(config.bc_batch_size)
+        gradient_steps = int(config.bc_gradient_steps)
+
+        losses = []
+
+        self.model.policy.set_training_mode(True)
+
+        for _ in range(gradient_steps):
+            batch = self.model.sample_teacher_batch(batch_size)
+            if batch is None:
+                return
+
+            obs_tensor, teacher_actions = batch
+
+            # SB3 SAC actor returns scaled action in [-1, 1].
+            pred_actions = self.model.policy.actor(
+                obs_tensor,
+                deterministic=True,
+            )
+
+            bc_loss = F.mse_loss(pred_actions, teacher_actions)
+            loss = coef * bc_loss
+
+            self.model.policy.actor.optimizer.zero_grad()
+            loss.backward()
+
+            th.nn.utils.clip_grad_norm_(
+                self.model.policy.actor.parameters(),
+                max_norm=float(config.bc_max_grad_norm),
+            )
+
+            self.model.policy.actor.optimizer.step()
+            losses.append(float(bc_loss.detach().cpu().item()))
+
+        if losses:
+            self.logger.record("train/bc_loss", float(np.mean(losses)))
+            self.logger.record("train/bc_coef", coef)
+            self.logger.record(
+                "train/bc_teacher_buffer_size",
+                float(self.model.teacher_buffer_size()),
+            )
 
 
 class PrintQSwitchCallback(BaseCallback):

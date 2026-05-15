@@ -817,7 +817,7 @@ class QMPGraspInsertEnv(MujocoEnv, utils.EzPickle):
         info: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> np.ndarray | float:
         del info
-        # print(f"Achieved Goal : {achieved_goal}, Desired Goal : {desired_goal}")
+        print(f"Achieved Goal : {achieved_goal}, Desired Goal : {desired_goal}")
         achieved_goal_arr = np.asarray(achieved_goal, dtype=np.float64)
         single = achieved_goal_arr.ndim == 1
         success = self._goal_success_mask(achieved_goal_arr, desired_goal)

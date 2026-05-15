@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from collections import deque
 
 import numpy as np
 import torch as th
@@ -36,12 +37,25 @@ class QSwitchConfig:
     epsilon_random_action: bool = False
     q_aggregation: str = "min"
     debug_to_env: bool = True
-    target_candidate_starts: int = 1_000_000
+    target_candidate_starts: int = 300_000
     target_phase_gate: bool = True
     target_min_lift_height: float = 0.035
-    target_q_margin: float = 0.0
+    target_q_margin: float = 1.0
     q_value_abs_limit: float = 5_000.0
     use_target_critic_for_selection: bool = True
+    target_include_prob_final: float = 0.30
+    target_include_prob_ramp_steps: int = 700_000
+
+    # behavior cloning from primitive/scripted teacher
+    bc_enabled: bool = True
+    bc_buffer_size: int = 200_000
+    bc_batch_size: int = 256
+    bc_gradient_steps: int = 1
+    bc_start_steps: int = 10_000
+    bc_initial_coef: float = 1.0
+    bc_final_coef: float = 0.05
+    bc_decay_steps: int = 800_000
+    bc_max_grad_norm: float = 10.0
 
 
 class QSwitchSAC(SAC):
@@ -64,6 +78,10 @@ class QSwitchSAC(SAC):
         self.qswitch_config = qswitch_config or QSwitchConfig()
         self._qswitch_rng = np.random.default_rng()
         self.last_qswitch_debug: dict[str, Any] = {}
+        self._teacher_obs_buffer = deque(maxlen=int(self.qswitch_config.bc_buffer_size))
+        self._teacher_action_buffer = deque(
+            maxlen=int(self.qswitch_config.bc_buffer_size)
+        )
         super().__init__(*args, **kwargs)
 
     def _excluded_save_params(self) -> list[str]:
@@ -91,13 +109,34 @@ class QSwitchSAC(SAC):
             + progress * (config.epsilon_final - config.epsilon_initial)
         )
 
+    def _target_include_probability(self, learning_starts: int) -> float:
+        config = self.qswitch_config
+
+        if self.num_timesteps < learning_starts:
+            return 0.0
+
+        if self.num_timesteps < config.target_candidate_starts:
+            return 0.0
+
+        ramp_steps = max(1, int(config.target_include_prob_ramp_steps))
+        progress = min(
+            1.0,
+            float(self.num_timesteps - config.target_candidate_starts)
+            / float(ramp_steps),
+        )
+        return float(config.target_include_prob_final * progress)
+
     def _should_include_target(self, learning_starts: int) -> bool:
         config = self.qswitch_config
+
         if self.num_timesteps < learning_starts:
             return bool(config.include_target_during_warmup)
-        if self.num_timesteps < config.target_candidate_starts:
+
+        if not config.include_target_after_learning_starts:
             return False
-        return bool(config.include_target_after_learning_starts)
+
+        prob = self._target_include_probability(learning_starts)
+        return bool(self._qswitch_rng.random() < prob)
 
     @staticmethod
     def _repeat_obs_for_candidates(obs: Any, n_candidates: int) -> Any:
@@ -342,10 +381,91 @@ class QSwitchSAC(SAC):
             return None
         return max(
             candidate_indices,
-            key=lambda index: q_values[index]
-            if np.isfinite(q_values[index])
-            else -np.inf,
+            key=lambda index: (
+                q_values[index] if np.isfinite(q_values[index]) else -np.inf
+            ),
         )
+
+    @staticmethod
+    def _copy_obs_for_teacher(obs: Any) -> Any:
+        if isinstance(obs, dict):
+            return {
+                key: np.asarray(value, dtype=np.float32).copy()
+                for key, value in obs.items()
+            }
+        return np.asarray(obs, dtype=np.float32).copy()
+
+    def _store_teacher_example(self, obs: Any, teacher_action: np.ndarray) -> None:
+        if not self.qswitch_config.bc_enabled:
+            return
+
+        teacher_action = np.asarray(teacher_action, dtype=np.float32).reshape(1, -1)
+        teacher_action = np.clip(
+            teacher_action,
+            self.action_space.low,
+            self.action_space.high,
+        )
+
+        # SAC actor/critic memakai scaled action di replay/training space.
+        teacher_buffer_action = self.policy.scale_action(teacher_action)[0]
+
+        self._teacher_obs_buffer.append(self._copy_obs_for_teacher(obs))
+        self._teacher_action_buffer.append(
+            np.asarray(teacher_buffer_action, dtype=np.float32).copy()
+        )
+
+    def teacher_buffer_size(self) -> int:
+        return int(len(self._teacher_action_buffer))
+
+    def bc_coef(self) -> float:
+        config = self.qswitch_config
+        if self.num_timesteps < config.bc_start_steps:
+            return 0.0
+
+        progress = min(
+            1.0,
+            float(self.num_timesteps - config.bc_start_steps)
+            / float(max(1, config.bc_decay_steps)),
+        )
+        return float(
+            config.bc_initial_coef
+            + progress * (config.bc_final_coef - config.bc_initial_coef)
+        )
+
+    def sample_teacher_batch(self, batch_size: int):
+        if len(self._teacher_action_buffer) < batch_size:
+            return None
+
+        indices = self._qswitch_rng.integers(
+            0,
+            len(self._teacher_action_buffer),
+            size=int(batch_size),
+        )
+
+        first_obs = self._teacher_obs_buffer[0]
+
+        if isinstance(first_obs, dict):
+            obs_batch = {
+                key: np.stack(
+                    [self._teacher_obs_buffer[int(i)][key] for i in indices],
+                    axis=0,
+                ).astype(np.float32)
+                for key in first_obs.keys()
+            }
+        else:
+            obs_batch = np.stack(
+                [self._teacher_obs_buffer[int(i)] for i in indices],
+                axis=0,
+            ).astype(np.float32)
+
+        action_batch = np.stack(
+            [self._teacher_action_buffer[int(i)] for i in indices],
+            axis=0,
+        ).astype(np.float32)
+
+        obs_tensor = obs_as_tensor(obs_batch, self.device)
+        action_tensor = th.as_tensor(action_batch, device=self.device).float()
+        return obs_tensor, action_tensor
 
     def _push_debug(self, debug: dict[str, Any]) -> None:
         self.last_qswitch_debug = debug
@@ -487,7 +607,9 @@ class QSwitchSAC(SAC):
             q_values = self._candidate_q_values(obs=obs, candidate_actions=actions)
             finite_q = np.isfinite(q_values)
             q_abs_max = (
-                float(np.max(np.abs(q_values[finite_q]))) if np.any(finite_q) else np.inf
+                float(np.max(np.abs(q_values[finite_q])))
+                if np.any(finite_q)
+                else np.inf
             )
             q_unstable = bool(
                 not np.all(finite_q) or q_abs_max > config.q_value_abs_limit
@@ -519,6 +641,32 @@ class QSwitchSAC(SAC):
                     selection_mode = "target_margin_primitive_fallback"
             selected_action = actions[selected_index]
             selected_label = labels[selected_index]
+
+        # setelah proses critic/epsilon selesai
+        teacher_index = self._best_non_target_index(
+            labels=labels,
+            q_values=q_values,
+        )
+        teacher_label = None
+        target_q_gap = np.nan
+
+        if teacher_index is not None:
+            teacher_label = labels[teacher_index]
+            self._store_teacher_example(obs, actions[teacher_index])
+
+        target_index = None
+        for idx, label in enumerate(labels):
+            if label == "target_policy":
+                target_index = idx
+                break
+
+        if (
+            target_index is not None
+            and teacher_index is not None
+            and np.isfinite(q_values[target_index])
+            and np.isfinite(q_values[teacher_index])
+        ):
+            target_q_gap = float(q_values[target_index] - q_values[teacher_index])
 
         selected_action = np.asarray(selected_action, dtype=np.float32).reshape(1, -1)
         selected_buffer_action = self.policy.scale_action(selected_action)
@@ -552,9 +700,7 @@ class QSwitchSAC(SAC):
             "target_forced_fallback": int(target_forced_fallback),
             "target_included": int("target_policy" in labels),
             "q_abs_max": float(
-                np.nanmax(np.abs(q_values))
-                if np.any(np.isfinite(q_values))
-                else np.inf
+                np.nanmax(np.abs(q_values)) if np.any(np.isfinite(q_values)) else np.inf
             ),
             "q_unstable": int(
                 (not np.all(np.isfinite(q_values)))
@@ -565,6 +711,16 @@ class QSwitchSAC(SAC):
             ),
             "q_value_abs_limit": float(config.q_value_abs_limit),
             "target_q_margin": float(config.target_q_margin),
+            "target_include_prob": float(
+                self._target_include_probability(learning_starts)
+            ),
+            "teacher_label": teacher_label if teacher_label is not None else "none",
+            "teacher_buffer_size": int(self.teacher_buffer_size()),
+            "target_q_gap": float(target_q_gap),
+            "bc_coef": float(self.bc_coef()),
+            "target_include_prob": float(
+                self._target_include_probability(learning_starts)
+            ),
         }
         for label in sorted(
             set(labels + [selected_label, "random_action", "target_policy"])

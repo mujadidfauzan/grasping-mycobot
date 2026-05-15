@@ -120,7 +120,9 @@ class QSwitchVideoOverlayWrapper(Wrapper):
 
             labels = qswitch.get("candidate_labels", [])
             q_values = qswitch.get("candidate_q_values", [])
-            if isinstance(labels, (list, tuple)) and isinstance(q_values, (list, tuple)):
+            if isinstance(labels, (list, tuple)) and isinstance(
+                q_values, (list, tuple)
+            ):
                 lines.append("candidate q:")
                 for label, q_value in zip(labels, q_values):
                     q_scalar = _coerce_float(q_value)
@@ -196,7 +198,7 @@ def parse_args() -> argparse.Namespace:
         choices=["future", "final", "episode"],
         default="future",
     )
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--ent-coef", default="0.01")
@@ -250,9 +252,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-q-margin",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Extra Q margin required before target actor can beat a primitive.",
     )
+    parser.add_argument("--target-include-prob-final", type=float, default=0.30)
+    parser.add_argument("--target-include-prob-ramp-steps", type=int, default=700_000)
+
+    parser.add_argument("--disable-bc", action="store_true")
+    parser.add_argument("--bc-buffer-size", type=int, default=200_000)
+    parser.add_argument("--bc-batch-size", type=int, default=256)
+    parser.add_argument("--bc-gradient-steps", type=int, default=1)
+    parser.add_argument("--bc-start-steps", type=int, default=10_000)
+    parser.add_argument("--bc-initial-coef", type=float, default=1.0)
+    parser.add_argument("--bc-final-coef", type=float, default=0.05)
+    parser.add_argument("--bc-decay-steps", type=int, default=800_000)
+    parser.add_argument("--bc-max-grad-norm", type=float, default=10.0)
     parser.add_argument(
         "--q-value-abs-limit",
         type=float,
@@ -355,6 +369,7 @@ def build_primitives(args: argparse.Namespace) -> PrimitiveEnsemble:
     grasp_model = _require_file(resolve_repo_path(args.grasp_model), "Grasp model")
     insert_model = _require_file(resolve_repo_path(args.insert_model), "Insert model")
     grasp_xml = _require_file(resolve_repo_path(args.grasp_xml_file), "Grasp XML")
+    insert_xml = _require_file(resolve_repo_path(args.xml_file), "Insert XML")
     deterministic = not bool(args.stochastic_primitives)
     strict = not bool(args.non_strict_primitives)
 
@@ -371,9 +386,15 @@ def build_primitives(args: argparse.Namespace) -> PrimitiveEnsemble:
             ),
             InsertPrimitiveAdapter(
                 model_path=insert_model,
+                xml_file=insert_xml,
+                grasp_model_path=grasp_model,
+                grasp_xml_file=grasp_xml,
                 label="primitive_insert",
                 deterministic=deterministic,
                 device=args.device,
+                env_kwargs={
+                    "grasp_transfer_settle_steps": 0,
+                },
                 strict=strict,
             ),
         ]
@@ -401,6 +422,17 @@ def build_qswitch_config(args: argparse.Namespace):
         # Epsilon hanya memilih random dari candidate yang sudah valid.
         epsilon_random_action=False,
         q_aggregation=args.q_aggregation,
+        target_include_prob_final=args.target_include_prob_final,
+        target_include_prob_ramp_steps=args.target_include_prob_ramp_steps,
+        bc_enabled=not bool(args.disable_bc),
+        bc_buffer_size=args.bc_buffer_size,
+        bc_batch_size=args.bc_batch_size,
+        bc_gradient_steps=args.bc_gradient_steps,
+        bc_start_steps=args.bc_start_steps,
+        bc_initial_coef=args.bc_initial_coef,
+        bc_final_coef=args.bc_final_coef,
+        bc_decay_steps=args.bc_decay_steps,
+        bc_max_grad_norm=args.bc_max_grad_norm,
     )
 
 
@@ -429,7 +461,11 @@ def main() -> None:
     except ImportError:
         from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 
-    from qmpher.callbacks import PrintQSwitchCallback, QSwitchInfoCallback
+    from qmpher.callbacks import (
+        PrintQSwitchCallback,
+        QSwitchInfoCallback,
+        QSwitchBCCallback,
+    )
     from qmpher.q_switch_sac import QSwitchSAC
 
     run_name = (
@@ -491,6 +527,7 @@ def main() -> None:
     callbacks = [
         QSwitchInfoCallback(log_freq=args.log_freq),
         PrintQSwitchCallback(print_freq=args.print_freq),
+        QSwitchBCCallback(),
     ]
     if args.save_freq > 0:
         callbacks.insert(

@@ -158,3 +158,119 @@ def sync_grasp_env_from_target(
 
     if hasattr(source, "_ik_failure_count") and hasattr(target, "_ik_failure_count"):
         target._ik_failure_count = int(source._ik_failure_count)
+
+
+def sync_insert_env_from_target(
+    *,
+    target_env: Any,
+    insert_env: Any,
+    target_object_name: str = "box",
+) -> None:
+    """Synchronize a hidden InsertTargetEnvIK with the live QMP env state."""
+    source = unwrap_env(target_env)
+    target = unwrap_env(insert_env)
+
+    qpos = target.init_qpos.copy()
+    qvel = target.init_qvel.copy()
+
+    source_object_info = _active_object_info(source)
+    target.active_obj_name = target_object_name
+    target_object_info = target.object_info[target_object_name]
+    skip_joint_names = {
+        str(source_object_info["joint_name"]),
+        str(target_object_info["joint_name"]),
+    }
+    _copy_common_joint_state(
+        source_env=source,
+        target_env=target,
+        qpos=qpos,
+        qvel=qvel,
+        skip_joint_names=skip_joint_names,
+    )
+
+    source_body = source.data.body(str(source_object_info["body_name"]))
+    object_qposadr = int(target_object_info["qposadr"])
+    object_dofadr = int(target_object_info["dofadr"])
+    qpos[object_qposadr : object_qposadr + 3] = source_body.xpos.copy()
+    qpos[object_qposadr + 3 : object_qposadr + 7] = source_body.xquat.copy()
+    qvel[object_dofadr : object_dofadr + 6] = 0.0
+
+    set_place_pose = getattr(target, "_set_place_pose_in_model", None)
+    if callable(set_place_pose) and hasattr(source, "place_info"):
+        source_place_body_id = int(source.place_info["body_id"])
+        set_place_pose(
+            source.model.body_pos[source_place_body_id].copy(),
+            source.model.body_quat[source_place_body_id].copy(),
+        )
+
+    sync_target_site = getattr(target, "_sync_target_site_to_active_place", None)
+    if callable(sync_target_site):
+        sync_target_site()
+
+    target.set_state(qpos, qvel)
+    ctrl = _copy_common_ctrl(source, target)
+    set_closed_gripper = getattr(target, "_set_closed_gripper_target", None)
+    if callable(set_closed_gripper):
+        set_closed_gripper(ctrl)
+    target.data.ctrl[:] = np.clip(
+        ctrl,
+        target.model.actuator_ctrlrange[:, 0],
+        target.model.actuator_ctrlrange[:, 1],
+    )
+
+    if hasattr(target, "_eval_gripper_open"):
+        target._eval_gripper_open = False
+    if hasattr(target, "gripper_state"):
+        target.gripper_state = "closed"
+
+    mujoco.mj_forward(target.model, target.data)
+
+    if hasattr(source, "current_step") and hasattr(target, "current_step"):
+        target.current_step = int(source.current_step)
+    if hasattr(source, "success_counter") and hasattr(target, "success_counter"):
+        target.success_counter = int(source.success_counter)
+    if hasattr(source, "last_action") and hasattr(target, "last_action"):
+        target.last_action = np.asarray(source.last_action, dtype=np.float32).copy()
+    if hasattr(source, "_ik_target_pos") and hasattr(target, "_ik_target_pos"):
+        target._ik_target_pos = np.asarray(
+            source._ik_target_pos, dtype=np.float64
+        ).copy()
+    if hasattr(source, "_ik_target_quat") and hasattr(target, "_ik_target_quat"):
+        target._ik_target_quat = np.asarray(
+            source._ik_target_quat, dtype=np.float64
+        ).copy()
+    if hasattr(source, "_ik_failure_count") and hasattr(target, "_ik_failure_count"):
+        target._ik_failure_count = int(source._ik_failure_count)
+
+    for attr in (
+        "initial_obj_site_pos",
+        "sampled_target_place_pos",
+        "sampled_target_place_quat",
+        "sampled_target_pos",
+        "sampled_target_quat",
+    ):
+        if hasattr(source, attr) and hasattr(target, attr):
+            setattr(
+                target,
+                attr,
+                np.asarray(getattr(source, attr), dtype=np.float64).copy(),
+            )
+
+    for attr in (
+        "initial_object_target_dist",
+        "best_object_target_dist",
+        "sampled_target_place_yaw",
+        "applied_target_place_yaw",
+        "sampled_object_yaw",
+        "applied_object_yaw",
+        "_last_target_resample_distance",
+    ):
+        if hasattr(source, attr) and hasattr(target, attr):
+            setattr(target, attr, float(getattr(source, attr)))
+
+    if hasattr(source, "_last_target_resample_attempts") and hasattr(
+        target, "_last_target_resample_attempts"
+    ):
+        target._last_target_resample_attempts = int(
+            source._last_target_resample_attempts
+        )

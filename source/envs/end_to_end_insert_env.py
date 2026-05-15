@@ -8,6 +8,13 @@ from gymnasium import utils
 from gymnasium.envs.mujoco import MujocoEnv
 from gymnasium.spaces import Box
 
+from script.inverse_kinematics import (
+    IKResult,
+    MyCobotIK,
+    _quat_from_euler_xyz,
+    _quat_to_euler_xyz,
+)
+
 from .config_export import capture_init_config, export_env_config
 
 DEFAULT_CAMERA_CONFIG = {"trackbodyid": 0}
@@ -17,6 +24,7 @@ DEFAULT_XML_PATH = Path(__file__).resolve().parents[1] / "robot" / "object_place
 class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
     """End-to-end grasp-to-insert task with heuristic manual gripper switching."""
 
+    ACTION_COMPONENTS = ("dx", "dy", "dz", "droll", "dpitch", "dyaw")
     metadata = {
         "render_modes": [
             "human",
@@ -52,6 +60,23 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         terminate_on_release: bool = True,
         max_episode_steps: int = 400,
         arm_action_scale: float = 0.01,
+        cartesian_action_scale: float = 0.01,
+        cartesian_rotation_scale_deg: float = 10.0,
+        ik_workspace_low: tuple[float, float, float] = (0.08, -0.22, 0.015),
+        ik_workspace_high: tuple[float, float, float] = (0.35, 0.22, 0.45),
+        ik_position_only: bool = False,
+        ik_max_iters: int = 80,
+        ik_position_tolerance: float = 1e-3,
+        ik_rotation_tolerance_deg: float = 3.0,
+        ik_damping: float = 1e-3,
+        ik_step_size: float = 0.4,
+        ik_max_delta_deg: float = 5.0,
+        ik_rotation_weight: float = 0.35,
+        ik_random_restarts: int = 0,
+        ik_seed: int | None = 0,
+        control_interpolation_steps: int = 5,
+        max_joint_ctrl_delta_deg: float = 5.0,
+        smooth_cartesian_target: bool = True,
         object_x_range: tuple[float, float] = (0.16, 0.24),
         object_y_range: tuple[float, float] = (-0.10, 0.10),
         object_z: float = 0.025,
@@ -95,6 +120,23 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             terminate_on_release,
             max_episode_steps,
             arm_action_scale,
+            cartesian_action_scale,
+            cartesian_rotation_scale_deg,
+            ik_workspace_low,
+            ik_workspace_high,
+            ik_position_only,
+            ik_max_iters,
+            ik_position_tolerance,
+            ik_rotation_tolerance_deg,
+            ik_damping,
+            ik_step_size,
+            ik_max_delta_deg,
+            ik_rotation_weight,
+            ik_random_restarts,
+            ik_seed,
+            control_interpolation_steps,
+            max_joint_ctrl_delta_deg,
+            smooth_cartesian_target,
             object_x_range,
             object_y_range,
             object_z,
@@ -130,6 +172,27 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         self._terminate_on_release = bool(terminate_on_release)
         self.max_episode_steps = int(max_episode_steps)
         self._arm_action_scale = float(arm_action_scale)
+        self._cartesian_action_scale = float(cartesian_action_scale)
+        self._cartesian_rotation_scale_rad = np.deg2rad(
+            float(cartesian_rotation_scale_deg)
+        )
+        self._ik_workspace_low = np.asarray(ik_workspace_low, dtype=np.float64).reshape(3)
+        self._ik_workspace_high = np.asarray(ik_workspace_high, dtype=np.float64).reshape(
+            3
+        )
+        self._ik_position_only = bool(ik_position_only)
+        self._ik_max_iters = int(ik_max_iters)
+        self._ik_position_tolerance = float(ik_position_tolerance)
+        self._ik_rotation_tolerance_rad = np.deg2rad(float(ik_rotation_tolerance_deg))
+        self._ik_damping = float(ik_damping)
+        self._ik_step_size = float(ik_step_size)
+        self._ik_max_delta_rad = np.deg2rad(float(ik_max_delta_deg))
+        self._ik_rotation_weight = float(ik_rotation_weight)
+        self._ik_random_restarts = max(0, int(ik_random_restarts))
+        self._ik_seed = None if ik_seed is None else int(ik_seed)
+        self._control_interpolation_steps = max(1, int(control_interpolation_steps))
+        self._max_joint_ctrl_delta_rad = np.deg2rad(float(max_joint_ctrl_delta_deg))
+        self._smooth_cartesian_target = bool(smooth_cartesian_target)
         self._object_x_range = tuple(float(value) for value in object_x_range)
         self._object_y_range = tuple(float(value) for value in object_y_range)
         self._object_z = float(object_z)
@@ -164,6 +227,30 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             raise ValueError("release_height_above_place must be non-negative.")
         if self.max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be greater than 0.")
+        if self._cartesian_action_scale <= 0.0:
+            raise ValueError("cartesian_action_scale must be greater than 0.")
+        if self._cartesian_rotation_scale_rad <= 0.0:
+            raise ValueError("cartesian_rotation_scale_deg must be greater than 0.")
+        if np.any(self._ik_workspace_low > self._ik_workspace_high):
+            raise ValueError("ik_workspace_low must be ordered below ik_workspace_high.")
+        if self._ik_max_iters <= 0:
+            raise ValueError("ik_max_iters must be greater than 0.")
+        if self._ik_position_tolerance <= 0.0:
+            raise ValueError("ik_position_tolerance must be greater than 0.")
+        if self._ik_rotation_tolerance_rad <= 0.0:
+            raise ValueError("ik_rotation_tolerance_deg must be greater than 0.")
+        if self._ik_damping < 0.0:
+            raise ValueError("ik_damping must be non-negative.")
+        if self._ik_step_size <= 0.0:
+            raise ValueError("ik_step_size must be greater than 0.")
+        if self._ik_max_delta_rad <= 0.0:
+            raise ValueError("ik_max_delta_deg must be greater than 0.")
+        if self._ik_rotation_weight < 0.0:
+            raise ValueError("ik_rotation_weight must be non-negative.")
+        if self._control_interpolation_steps <= 0:
+            raise ValueError("control_interpolation_steps must be greater than 0.")
+        if self._max_joint_ctrl_delta_rad < 0.0:
+            raise ValueError("max_joint_ctrl_delta_deg must be non-negative.")
         if self._object_x_range[0] > self._object_x_range[1]:
             raise ValueError("object_x_range must be ordered as (min_x, max_x).")
         if self._object_y_range[0] > self._object_y_range[1]:
@@ -312,11 +399,11 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             raise ValueError(
                 "EndToEndInsertEnv expects arm actuators plus 2 gripper actuators."
             )
-        self._arm_ctrl_dim = int(self.model.nu - 2)
+        self._setup_ik_action(xml_file=str(self.fullpath))
         self.action_space = Box(
             low=-1.0,
             high=1.0,
-            shape=(self._arm_ctrl_dim,),
+            shape=(len(self.ACTION_COMPONENTS),),
             dtype=np.float32,
         )
 
@@ -409,6 +496,46 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
                 object_names.append(obj_name)
         return object_names
 
+    def _setup_ik_action(self, *, xml_file: str) -> None:
+        self._ik_solver = MyCobotIK(
+            xml_file=Path(xml_file).expanduser().resolve(),
+            ee_site_name=self.ee_site_name,
+        )
+        self._arm_joint_names = tuple(self._ik_solver.joint_names)
+        self._arm_qpos_indices = np.array(
+            [
+                self.model.jnt_qposadr[
+                    self._require_named_id(
+                        mujoco.mjtObj.mjOBJ_JOINT, joint_name, "joint"
+                    )
+                ]
+                for joint_name in self._arm_joint_names
+            ],
+            dtype=np.int64,
+        )
+        self._arm_ctrl_indices = np.array(
+            [
+                self._require_named_id(
+                    mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name, "actuator"
+                )
+                for joint_name in self._arm_joint_names
+            ],
+            dtype=np.int64,
+        )
+        self._arm_ctrl_dim = int(len(self._arm_ctrl_indices))
+        if self._arm_ctrl_dim != len(self._ik_solver.joint_names):
+            raise ValueError(
+                "Cartesian IK action expects arm actuator count to match IK joint count. "
+                f"Got arm_ctrl_dim={self._arm_ctrl_dim} and "
+                f"ik_joints={len(self._ik_solver.joint_names)}."
+            )
+
+        self._ik_target_pos = np.zeros(3, dtype=np.float64)
+        self._ik_target_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._last_ik_result: IKResult | None = None
+        self._ik_failure_count = 0
+        self._reset_ik_state()
+
     @staticmethod
     def _normalize_quat(quat: np.ndarray) -> np.ndarray:
         quat = np.asarray(quat, dtype=np.float64)
@@ -460,6 +587,16 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         siny_cosp = 2.0 * (w * z + x * y)
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
         return float(np.arctan2(siny_cosp, cosy_cosp))
+
+    @staticmethod
+    def _wrap_to_pi(angle_rad: float) -> float:
+        return float((angle_rad + np.pi) % (2.0 * np.pi) - np.pi)
+
+    def _wrap_vector_to_pi(self, angles_rad: np.ndarray) -> np.ndarray:
+        return np.array(
+            [self._wrap_to_pi(float(value)) for value in angles_rad],
+            dtype=np.float64,
+        )
 
     def _get_site_quat(self, site_name: str) -> np.ndarray:
         quat = np.zeros(4, dtype=np.float64)
@@ -521,6 +658,99 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         target_pos = target_pos.copy()
         target_pos[2] += self._release_height_above_place
         return target_pos, target_quat
+
+    def _current_arm_joint_positions(self) -> np.ndarray:
+        return np.asarray(
+            self.data.qpos[self._arm_qpos_indices], dtype=np.float64
+        ).copy()
+
+    def _reset_ik_state(self) -> None:
+        ee_pos, ee_quat = self._get_ee_pose()
+        self._ik_target_pos = np.asarray(ee_pos, dtype=np.float64).copy()
+        self._ik_target_quat = self._normalize_quat(
+            np.asarray(ee_quat, dtype=np.float64)
+        )
+        self._last_ik_result = None
+        self._ik_failure_count = 0
+
+    def _compute_ik_target(self, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        action = np.asarray(action, dtype=np.float64).reshape(-1)
+        delta_pos = self._cartesian_action_scale * action[:3]
+        delta_rpy = self._cartesian_rotation_scale_rad * action[3:6]
+
+        if self._smooth_cartesian_target:
+            base_pos = self._ik_target_pos.copy()
+            base_quat = self._ik_target_quat.copy()
+        else:
+            base_pos, base_quat = self._get_ee_pose()
+            base_pos = np.asarray(base_pos, dtype=np.float64)
+            base_quat = np.asarray(base_quat, dtype=np.float64)
+
+        target_pos = np.clip(
+            base_pos + delta_pos,
+            self._ik_workspace_low,
+            self._ik_workspace_high,
+        )
+        target_rpy = self._wrap_vector_to_pi(_quat_to_euler_xyz(base_quat) + delta_rpy)
+        target_quat = _quat_from_euler_xyz(*target_rpy)
+        return target_pos, target_quat
+
+    def _apply_ik_action_to_ctrl(
+        self, target_ctrl: np.ndarray, effective_action: np.ndarray
+    ) -> np.ndarray:
+        target_pos, target_quat = self._compute_ik_target(effective_action)
+        ik_result = self._ik_solver.solve(
+            target_pos,
+            target_quat,
+            initial_q=self._current_arm_joint_positions(),
+            position_only=self._ik_position_only,
+            max_iters=self._ik_max_iters,
+            position_tolerance=self._ik_position_tolerance,
+            rotation_tolerance=self._ik_rotation_tolerance_rad,
+            damping=self._ik_damping,
+            step_size=self._ik_step_size,
+            max_delta=self._ik_max_delta_rad,
+            rotation_weight=self._ik_rotation_weight,
+            random_restarts=self._ik_random_restarts,
+            seed=self._ik_seed,
+        )
+
+        current_arm_ctrl = self.data.ctrl[self._arm_ctrl_indices].copy()
+        desired_arm_ctrl = ik_result.q_rad.copy()
+        if self._max_joint_ctrl_delta_rad > 0.0:
+            delta_q = desired_arm_ctrl - current_arm_ctrl
+            delta_q = np.clip(
+                delta_q,
+                -self._max_joint_ctrl_delta_rad,
+                self._max_joint_ctrl_delta_rad,
+            )
+            desired_arm_ctrl = current_arm_ctrl + delta_q
+
+        target_ctrl[self._arm_ctrl_indices] = desired_arm_ctrl
+        self._ik_target_pos = target_pos.copy()
+        self._ik_target_quat = self._normalize_quat(target_quat)
+        self._last_ik_result = ik_result
+        if not ik_result.success:
+            self._ik_failure_count += 1
+        return target_ctrl
+
+    def _do_interpolated_simulation(self, target_ctrl: np.ndarray) -> None:
+        frame_count = max(1, int(self.frame_skip))
+        interpolation_steps = min(
+            max(1, int(self._control_interpolation_steps)), frame_count
+        )
+        start_ctrl = self.data.ctrl.copy()
+        frames_done = 0
+
+        for interp_idx in range(1, interpolation_steps + 1):
+            remaining_frames = frame_count - frames_done
+            remaining_interps = interpolation_steps - interp_idx + 1
+            frames_this_step = max(1, remaining_frames // remaining_interps)
+            alpha = interp_idx / interpolation_steps
+            smooth_ctrl = (1.0 - alpha) * start_ctrl + alpha * target_ctrl
+            smooth_ctrl = np.clip(smooth_ctrl, self._ctrl_low, self._ctrl_high)
+            self.do_simulation(smooth_ctrl, frames_this_step)
+            frames_done += frames_this_step
 
     def _set_closed_gripper_target(self, ctrl: np.ndarray) -> None:
         self.gripper_state = "closed"
@@ -694,7 +924,6 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
 
         target_ctrl = self.data.ctrl.copy()
         effective_action = action.copy()
-        print(f"Phase: {self.phase}, Grasp Ready: {self.last_grasp_ready}, ")
         if self.phase == "approach":
             self._set_open_gripper_target(target_ctrl)
             if self.last_grasp_ready:
@@ -764,9 +993,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         else:
             raise RuntimeError(f"Unknown phase `{self.phase}`.")
 
-        target_ctrl[: self._arm_ctrl_dim] += (
-            self._arm_action_scale * effective_action[: self._arm_ctrl_dim]
-        )
+        target_ctrl = self._apply_ik_action_to_ctrl(target_ctrl, effective_action)
         target_ctrl = np.clip(target_ctrl, self._ctrl_low, self._ctrl_high)
         self._update_gripper_state_from_target(target_ctrl)
 
@@ -804,9 +1031,10 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         self.current_step += 1
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != self.action_space.shape:
+            expected = ", ".join(self.ACTION_COMPONENTS)
             raise ValueError(
                 "Unexpected action shape for EndToEndInsertEnv. "
-                f"Expected {self.action_space.shape} (arm only), got {action.shape}."
+                f"Expected {self.action_space.shape} ({expected}), got {action.shape}."
             )
         action = np.clip(action, self.action_space.low, self.action_space.high)
         self.last_action = action.astype(np.float32)
@@ -816,7 +1044,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         )
         self.last_effective_action = effective_action.astype(np.float32)
 
-        self.do_simulation(target_ctrl, self.frame_skip)
+        self._do_interpolated_simulation(target_ctrl)
         target_pos, target_quat = self._get_release_target_pose()
         self._set_target_site_pose_in_model(target_pos, target_quat)
         mujoco.mj_forward(self.model, self.data)
@@ -942,6 +1170,21 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             )
             reward = dense_reward + control_penalty + reward_grasp_bonus
 
+        ik_success = (
+            -1
+            if self._last_ik_result is None
+            else int(bool(self._last_ik_result.success))
+        )
+        ik_position_error_norm = (
+            0.0
+            if self._last_ik_result is None
+            else float(self._last_ik_result.position_error_norm)
+        )
+        ik_rotation_error_norm = (
+            0.0
+            if self._last_ik_result is None
+            else float(self._last_ik_result.rotation_error_norm)
+        )
         reward_info = {
             "active_object": self.active_obj_name,
             "phase": self.phase,
@@ -969,6 +1212,13 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             "gripper_ctrl_left": float(self.data.ctrl[-2]),
             "gripper_ctrl_right": float(self.data.ctrl[-1]),
             "success_counter": int(self.success_counter),
+            "ik_success": ik_success,
+            "ik_failure_count": int(self._ik_failure_count),
+            "ik_position_error_norm": ik_position_error_norm,
+            "ik_rotation_error_norm": ik_rotation_error_norm,
+            "ik_target_x": float(self._ik_target_pos[0]),
+            "ik_target_y": float(self._ik_target_pos[1]),
+            "ik_target_z": float(self._ik_target_pos[2]),
         }
         reward_info.update(dense_info)
 
@@ -1016,7 +1266,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         self.set_state(qpos, qvel)
 
         ctrl = self.data.ctrl.copy()
-        ctrl[: self._arm_ctrl_dim] = qpos[: self._arm_ctrl_dim]
+        ctrl[self._arm_ctrl_indices] = qpos[self._arm_qpos_indices]
         self._set_open_gripper_target(ctrl)
         self.data.ctrl[:] = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
         target_pos, target_quat = self._get_release_target_pose()
@@ -1052,6 +1302,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
                 ).xquat.copy()
             )
         )
+        self._reset_ik_state()
 
         return self._get_obs()
 
@@ -1068,6 +1319,7 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
 
         robot_qpos = qpos[:first_object_qposadr]
         robot_qvel = qvel[:first_object_dofadr]
+        arm_ctrl = self.data.ctrl[self._arm_ctrl_indices].copy()
         gripper_qpos = qpos[[self.gripL_qadr, self.gripR_qadr]].copy()
         gripper_qvel = qvel[[self.gripL_dadr, self.gripR_dadr]].copy()
         gripper_ctrl = self.data.ctrl[-2:].copy()
@@ -1087,10 +1339,16 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         obj_target_pos_error, obj_target_rot_error = self._get_pose_error(
             obj_pos, obj_quat, target_pos, target_quat
         )
+        ik_success = (
+            -1.0
+            if self._last_ik_result is None
+            else float(bool(self._last_ik_result.success))
+        )
 
         return [
             ("robot_qpos", robot_qpos),
             ("robot_qvel", robot_qvel),
+            ("arm_ctrl", arm_ctrl),
             ("gripper_qpos", gripper_qpos),
             ("gripper_qvel", gripper_qvel),
             ("gripper_ctrl", gripper_ctrl),
@@ -1103,6 +1361,10 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             ("object_quat", obj_quat),
             ("target_pos", target_pos),
             ("target_quat", target_quat),
+            ("ik_target_pos", self._ik_target_pos),
+            ("ik_target_quat", self._ik_target_quat),
+            ("last_action", self.last_action),
+            ("last_effective_action", self.last_effective_action),
             ("ee_object_pos_error", ee_obj_pos_error),
             ("ee_object_rot_error", ee_obj_rot_error),
             ("object_target_pos_error", obj_target_pos_error),
@@ -1117,6 +1379,8 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
                         np.linalg.norm(obj_target_rot_error),
                         float(self.grasp_latched),
                         float(self.release_latched),
+                        ik_success,
+                        float(self._ik_failure_count),
                     ],
                     dtype=np.float64,
                 ),
@@ -1134,6 +1398,40 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
 
     def export_config(self) -> dict:
         config = export_env_config(self, self._get_obs_components())
+        config["action"]["controller"] = "cartesian_ik"
+        config["action"]["action_components"] = list(self.ACTION_COMPONENTS)
+        config["action"]["cartesian_action_scale_m"] = float(
+            self._cartesian_action_scale
+        )
+        config["action"]["cartesian_rotation_scale_deg"] = float(
+            np.rad2deg(self._cartesian_rotation_scale_rad)
+        )
+        config["action"]["ik_workspace_low"] = self._ik_workspace_low.tolist()
+        config["action"]["ik_workspace_high"] = self._ik_workspace_high.tolist()
+        config["action"]["ik_position_only"] = bool(self._ik_position_only)
+        config["action"]["ik_max_iters"] = int(self._ik_max_iters)
+        config["action"]["ik_position_tolerance"] = float(
+            self._ik_position_tolerance
+        )
+        config["action"]["ik_rotation_tolerance_deg"] = float(
+            np.rad2deg(self._ik_rotation_tolerance_rad)
+        )
+        config["action"]["ik_damping"] = float(self._ik_damping)
+        config["action"]["ik_step_size"] = float(self._ik_step_size)
+        config["action"]["ik_max_delta_deg"] = float(np.rad2deg(self._ik_max_delta_rad))
+        config["action"]["ik_rotation_weight"] = float(self._ik_rotation_weight)
+        config["action"]["ik_random_restarts"] = int(self._ik_random_restarts)
+        config["action"]["ik_seed"] = self._ik_seed
+        config["action"]["control_interpolation_steps"] = int(
+            self._control_interpolation_steps
+        )
+        config["action"]["max_joint_ctrl_delta_deg"] = float(
+            np.rad2deg(self._max_joint_ctrl_delta_rad)
+        )
+        config["action"]["smooth_cartesian_target"] = bool(
+            self._smooth_cartesian_target
+        )
+        config["action"]["ik_joint_names"] = list(self._ik_solver.joint_names)
         config["action"]["gripper_policy"] = "manual_grasp_release_heuristic"
         config["action"]["grasp_distance"] = float(self._grasp_distance)
         config["action"]["grasp_angle_deg"] = float(np.rad2deg(self._grasp_angle_rad))
@@ -1192,6 +1490,36 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
         target_place_quat = self._normalize_quat(
             self.data.body(str(self._get_active_place_info()["body_name"])).xquat.copy()
         )
+        ik_debug = {
+            "ik_target_pos": self._ik_target_pos.copy(),
+            "ik_target_quat": self._ik_target_quat.copy(),
+            "ik_failure_count": int(self._ik_failure_count),
+            "control_interpolation_steps": int(self._control_interpolation_steps),
+            "smooth_cartesian_target": bool(self._smooth_cartesian_target),
+        }
+        if self._last_ik_result is None:
+            ik_debug.update(
+                {
+                    "ik_success": None,
+                    "ik_iterations": 0,
+                    "ik_position_error_norm": 0.0,
+                    "ik_rotation_error_rad": 0.0,
+                }
+            )
+        else:
+            ik_debug.update(
+                {
+                    "ik_success": bool(self._last_ik_result.success),
+                    "ik_message": self._last_ik_result.message,
+                    "ik_iterations": int(self._last_ik_result.iterations),
+                    "ik_position_error_norm": float(
+                        self._last_ik_result.position_error_norm
+                    ),
+                    "ik_rotation_error_rad": float(
+                        self._last_ik_result.rotation_error_norm
+                    ),
+                }
+            )
 
         return {
             "active_object": self.active_obj_name,
@@ -1230,12 +1558,14 @@ class EndToEndInsertEnv(MujocoEnv, utils.EzPickle):
             "last_zero_action_reason": self.last_zero_action_reason,
             "last_action": self.last_action.copy(),
             "last_effective_action": self.last_effective_action.copy(),
+            "arm_ctrl": self.data.ctrl[self._arm_ctrl_indices].copy(),
             "sampled_object_yaw": float(self.sampled_object_yaw),
             "applied_object_yaw": float(self.applied_object_yaw),
             "sampled_target_place_yaw": float(self.sampled_target_place_yaw),
             "applied_target_place_yaw": float(self.applied_target_place_yaw),
             "release_height_above_place": float(self._release_height_above_place),
             "success_counter": int(self.success_counter),
+            **ik_debug,
         }
 
     def render(self):
