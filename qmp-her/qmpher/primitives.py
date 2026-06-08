@@ -134,7 +134,8 @@ class InsertPrimitiveAdapter:
         except Exception:
             lift_height = 0.0
 
-        if lift_height < self.min_lift_height:
+        insert_active = bool(getattr(env, "qswitch_insert_active", False))
+        if lift_height < self.min_lift_height and not insert_active:
             return []
 
         try:
@@ -149,6 +150,9 @@ class InsertPrimitiveAdapter:
                 obs,
                 deterministic=self.deterministic,
             )
+            # print(
+            #     f"Insert predicted action: {np.round(np.asarray(action).reshape(-1), 6)}",
+            # )
         except Exception as exc:
             if self.strict:
                 raise
@@ -170,6 +174,7 @@ class InsertPrimitiveAdapter:
                     "gripper_phase": gripper_phase,
                     "lift_height": lift_height,
                     "min_lift_height": self.min_lift_height,
+                    "insert_active": int(insert_active),
                     "primitive_obs_shape": tuple(int(v) for v in obs.shape),
                     "primitive_env": type(insert_env).__name__,
                 },
@@ -352,7 +357,9 @@ class GraspPrimitiveAdapter:
             # )
 
             action, _ = model.predict(obs, deterministic=self.deterministic)
-
+            # print(
+            #     f" Grasp predicted action: {np.round(np.asarray(action).reshape(-1), 6)}",
+            # )
         except Exception as exc:
             if self.strict:
                 raise

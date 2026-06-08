@@ -15,10 +15,13 @@ from .utils import call_vec_env_method, first_env_from_vec, unwrap_env
 SHORT_LABELS = {
     "primitive_grasp": "pg",
     "primitive_insert": "pi",
+    "script_lift": "lift",
     "target_policy": "tp",
     "random_action": "rand",
     "zero_action": "zero",
 }
+
+TEACHER_LABELS = ("primitive_grasp", "primitive_insert", "script_lift")
 
 
 def _short_label(label: str) -> str:
@@ -38,13 +41,17 @@ class QSwitchConfig:
     q_aggregation: str = "min"
     debug_to_env: bool = True
     target_candidate_starts: int = 300_000
+    target_policy_only_starts: int = 1_000_000
     target_phase_gate: bool = True
     target_min_lift_height: float = 0.035
-    target_q_margin: float = 1.0
+    latch_insert_after_lift: bool = True
+    target_q_margin: float = 0.3
     q_value_abs_limit: float = 5_000.0
     use_target_critic_for_selection: bool = True
-    target_include_prob_final: float = 0.30
-    target_include_prob_ramp_steps: int = 700_000
+    target_include_prob_final: float = 1.0
+    target_include_prob_ramp_steps: int = 300_000
+    selection_stickiness_steps: int = 5
+    selection_switch_q_margin: float = 0.15
 
     # behavior cloning from primitive/scripted teacher
     bc_enabled: bool = True
@@ -52,10 +59,10 @@ class QSwitchConfig:
     bc_batch_size: int = 256
     bc_gradient_steps: int = 1
     bc_start_steps: int = 10_000
-    bc_initial_coef: float = 1.0
-    bc_final_coef: float = 0.05
-    bc_decay_steps: int = 800_000
-    bc_max_grad_norm: float = 10.0
+    bc_initial_coef: float = 0.5
+    bc_final_coef: float = 0.0
+    bc_decay_steps: int = 200_000
+    bc_max_grad_norm: float = 5.0
 
 
 class QSwitchSAC(SAC):
@@ -82,11 +89,22 @@ class QSwitchSAC(SAC):
         self._teacher_action_buffer = deque(
             maxlen=int(self.qswitch_config.bc_buffer_size)
         )
+        self._sticky_selected_label: str | None = None
+        self._sticky_steps_left = 0
+        self._sticky_context: str | None = None
         super().__init__(*args, **kwargs)
 
     def _excluded_save_params(self) -> list[str]:
         excluded = super()._excluded_save_params()
-        return excluded + ["primitive_ensemble", "_qswitch_rng"]
+        return excluded + [
+            "primitive_ensemble",
+            "_qswitch_rng",
+            "_teacher_obs_buffer",
+            "_teacher_action_buffer",
+            "_sticky_selected_label",
+            "_sticky_steps_left",
+            "_sticky_context",
+        ]
 
     def set_qswitch_ensemble(
         self,
@@ -138,6 +156,10 @@ class QSwitchSAC(SAC):
         prob = self._target_include_probability(learning_starts)
         return bool(self._qswitch_rng.random() < prob)
 
+    def _target_policy_only_active(self) -> bool:
+        starts = int(getattr(self.qswitch_config, "target_policy_only_starts", 0))
+        return starts > 0 and self.num_timesteps >= starts
+
     @staticmethod
     def _repeat_obs_for_candidates(obs: Any, n_candidates: int) -> Any:
         """Build a batch where the same state is paired with every action candidate."""
@@ -176,6 +198,29 @@ class QSwitchSAC(SAC):
         candidate_label = str(candidate.label)
         return candidate_label == label or candidate_label.startswith(f"{label}:")
 
+    def _sync_insert_latch(
+        self,
+        *,
+        target_env: Any,
+        phase: str,
+        lift_height: float,
+    ) -> bool:
+        env = unwrap_env(target_env)
+        if not self.qswitch_config.latch_insert_after_lift:
+            return False
+
+        insert_active = bool(getattr(env, "qswitch_insert_active", False))
+        if phase != "closed":
+            insert_active = False
+        elif lift_height >= float(self.qswitch_config.target_min_lift_height):
+            insert_active = True
+
+        try:
+            setattr(env, "qswitch_insert_active", insert_active)
+        except Exception:
+            pass
+        return insert_active
+
     def _phase_filter_primitive_candidates(
         self,
         *,
@@ -206,6 +251,11 @@ class QSwitchSAC(SAC):
             lift_height = 0.0
 
         min_lift_height = float(self.qswitch_config.target_min_lift_height)
+        insert_active = self._sync_insert_latch(
+            target_env=env,
+            phase=phase,
+            lift_height=lift_height,
+        )
 
         grasp_candidates = [
             c for c in candidates if self._candidate_has_label(c, "primitive_grasp")
@@ -219,6 +269,10 @@ class QSwitchSAC(SAC):
         if phase == "open":
             filtered = grasp_candidates
             reason = "open_use_grasp"
+
+        elif phase == "closed" and insert_active:
+            filtered = insert_candidates
+            reason = "closed_use_insert_latched"
 
         elif phase == "closed" and lift_height < min_lift_height:
             lift_action = np.zeros_like(candidates[0].action, dtype=np.float32).reshape(
@@ -258,6 +312,7 @@ class QSwitchSAC(SAC):
             "phase": phase,
             "lift_h": float(lift_height),
             "min_lift_h": float(min_lift_height),
+            "insert_active": int(insert_active),
             "before": int(len(candidates)),
             "after": int(len(filtered)),
         }
@@ -284,13 +339,21 @@ class QSwitchSAC(SAC):
             lift_height = float(metrics.get("lift_height", 0.0))
         except Exception:
             lift_height = 0.0
+        insert_active = self._sync_insert_latch(
+            target_env=env,
+            phase=phase,
+            lift_height=lift_height,
+        )
 
         if not config.target_phase_gate:
             allowed = True
             reason = "phase_gate_disabled"
         elif phase == "open":
-            allowed = False
-            reason = "open_use_grasp_primitive"
+            allowed = True
+            reason = "open_qswitch_grasp_target"
+        elif phase == "closed" and insert_active:
+            allowed = True
+            reason = "closed_insert_latched"
         elif phase == "closed" and lift_height < config.target_min_lift_height:
             allowed = False
             reason = "closed_wait_for_lift"
@@ -311,7 +374,131 @@ class QSwitchSAC(SAC):
             "phase": phase,
             "lift_h": float(lift_height),
             "min_lift_h": float(config.target_min_lift_height),
+            "insert_active": int(insert_active),
         }
+
+    def _selection_stickiness_state(self) -> dict[str, Any]:
+        config = self.qswitch_config
+        previous_label = getattr(self, "_sticky_selected_label", None)
+        context = getattr(self, "_sticky_context", None)
+        return {
+            "enabled": int(config.selection_stickiness_steps > 0),
+            "applied": 0,
+            "previous_label": (
+                previous_label if previous_label is not None else "none"
+            ),
+            "steps_left": int(getattr(self, "_sticky_steps_left", 0)),
+            "context": context if context is not None else "none",
+            "configured_steps": int(config.selection_stickiness_steps),
+            "switch_q_margin": float(config.selection_switch_q_margin),
+        }
+
+    @staticmethod
+    def _stickiness_context_from_phase_debug(
+        *,
+        phase_filter_debug: dict[str, Any],
+        target_phase_debug: dict[str, Any],
+    ) -> str:
+        phase = phase_filter_debug.get(
+            "phase",
+            phase_filter_debug.get("phase_filter_phase", None),
+        )
+        if phase is None:
+            phase = target_phase_debug.get("phase", "unknown")
+
+        reason = phase_filter_debug.get(
+            "reason",
+            phase_filter_debug.get("phase_filter_reason", "unknown"),
+        )
+        insert_active = phase_filter_debug.get(
+            "insert_active",
+            target_phase_debug.get("insert_active", 0),
+        )
+        return f"phase={phase}|reason={reason}|insert={int(bool(insert_active))}"
+
+    def _sync_selection_stickiness_context(self, context: str) -> None:
+        previous_context = getattr(self, "_sticky_context", None)
+        if previous_context != context:
+            self._sticky_selected_label = None
+            self._sticky_steps_left = 0
+            self._sticky_context = context
+
+    def _reset_selection_stickiness(self) -> None:
+        self._sticky_selected_label = None
+        self._sticky_steps_left = 0
+
+    def _apply_selection_stickiness(
+        self,
+        *,
+        labels: list[str],
+        q_values: np.ndarray,
+        selected_index: int,
+        selection_mode: str,
+    ) -> tuple[int, str, dict[str, Any]]:
+        """Keep the previous policy label briefly unless a new one clearly wins."""
+        debug = self._selection_stickiness_state()
+        config = self.qswitch_config
+        if (
+            config.selection_stickiness_steps <= 0
+            or selected_index < 0
+            or selected_index >= len(labels)
+        ):
+            return selected_index, selection_mode, debug
+
+        previous_label = getattr(self, "_sticky_selected_label", None)
+        if (
+            previous_label is None
+            or previous_label == labels[selected_index]
+            or int(getattr(self, "_sticky_steps_left", 0)) <= 0
+            or previous_label not in labels
+        ):
+            return selected_index, selection_mode, debug
+
+        previous_index = labels.index(previous_label)
+        selected_q = (
+            float(q_values[selected_index])
+            if np.isfinite(q_values[selected_index])
+            else -np.inf
+        )
+        previous_q = (
+            float(q_values[previous_index])
+            if np.isfinite(q_values[previous_index])
+            else -np.inf
+        )
+        switch_margin = float(config.selection_switch_q_margin)
+        switch_allowed = selected_q >= previous_q + switch_margin
+
+        debug.update(
+            {
+                "challenger_label": labels[selected_index],
+                "challenger_q": selected_q,
+                "previous_q": previous_q,
+                "switch_allowed": int(switch_allowed),
+            }
+        )
+
+        if switch_allowed:
+            return selected_index, selection_mode, debug
+
+        debug["applied"] = 1
+        return previous_index, f"{selection_mode}_sticky", debug
+
+    def _commit_selection_stickiness(self, selected_label: str) -> None:
+        config = self.qswitch_config
+        if config.selection_stickiness_steps <= 0:
+            self._sticky_selected_label = selected_label
+            self._sticky_steps_left = 0
+            return
+
+        if getattr(self, "_sticky_selected_label", None) == selected_label:
+            self._sticky_steps_left = max(
+                0,
+                int(getattr(self, "_sticky_steps_left", 0)) - 1,
+            )
+            return
+
+        self._sticky_selected_label = selected_label
+        self._sticky_steps_left = int(config.selection_stickiness_steps)
 
     def _candidate_q_values(
         self,
@@ -368,14 +555,59 @@ class QSwitchSAC(SAC):
         labels: list[str],
         q_values: np.ndarray,
     ) -> int | None:
+        excluded_teacher_labels = {
+            "target_policy",
+            "zero_action",
+            "random_action",
+        }
+
         candidate_indices = [
             index
             for index, label in enumerate(labels)
-            if label != "target_policy" and np.isfinite(q_values[index])
+            if label not in excluded_teacher_labels and np.isfinite(q_values[index])
+        ]
+
+        if not candidate_indices:
+            candidate_indices = [
+                index
+                for index, label in enumerate(labels)
+                if label not in excluded_teacher_labels
+            ]
+
+        if not candidate_indices:
+            return None
+
+        return max(
+            candidate_indices,
+            key=lambda index: (
+                q_values[index] if np.isfinite(q_values[index]) else -np.inf
+            ),
+        )
+
+    @staticmethod
+    def _is_teacher_label(label: str) -> bool:
+        label = str(label)
+        return any(
+            label == prefix or label.startswith(f"{prefix}:")
+            for prefix in TEACHER_LABELS
+        )
+
+    def _best_teacher_index(
+        self,
+        *,
+        labels: list[str],
+        q_values: np.ndarray,
+    ) -> int | None:
+        candidate_indices = [
+            index
+            for index, label in enumerate(labels)
+            if self._is_teacher_label(label) and np.isfinite(q_values[index])
         ]
         if not candidate_indices:
             candidate_indices = [
-                index for index, label in enumerate(labels) if label != "target_policy"
+                index
+                for index, label in enumerate(labels)
+                if self._is_teacher_label(label)
             ]
         if not candidate_indices:
             return None
@@ -419,6 +651,9 @@ class QSwitchSAC(SAC):
 
     def bc_coef(self) -> float:
         config = self.qswitch_config
+        if self._target_policy_only_active():
+            return 0.0
+
         if self.num_timesteps < config.bc_start_steps:
             return 0.0
 
@@ -480,6 +715,81 @@ class QSwitchSAC(SAC):
         )
 
         config = self.qswitch_config
+        if (
+            config.enabled
+            and self._target_policy_only_active()
+            and self._last_obs is not None
+            and n_envs == 1
+        ):
+            self._reset_selection_stickiness()
+            debug = {
+                "enabled": int(config.enabled),
+                "target_policy_only": 1,
+                "target_policy_only_starts": int(config.target_policy_only_starts),
+                "num_candidates": 1,
+                "candidate_labels": ["target_policy"],
+                "candidate_q_values": [np.nan],
+                "candidate_sources": ["target_policy"],
+                "primitive_errors": [],
+                "prim_before_pf": [],
+                "prim_after_pf": [],
+                "pf": {
+                    "en": 0,
+                    "reason": "target_policy_only",
+                    "phase": "target_policy_only",
+                    "lift_h": 0.0,
+                    "min_lift_h": float(config.target_min_lift_height),
+                    "insert_active": 0,
+                    "before": 0,
+                    "after": 0,
+                },
+                "tp_phase": {
+                    "enabled": int(config.target_phase_gate),
+                    "allowed": 1,
+                    "reason": "target_policy_only",
+                    "phase": "target_policy_only",
+                    "lift_h": 0.0,
+                    "min_lift_h": float(config.target_min_lift_height),
+                    "insert_active": 0,
+                },
+                "selected_index": 0,
+                "selected_label": "target_policy",
+                "selected_q": np.nan,
+                "epsilon": 0.0,
+                "selection_mode": "target_policy_only",
+                "num_timesteps": int(self.num_timesteps),
+                "learning_starts": int(learning_starts),
+                "target_step_allowed": 1,
+                "target_phase_allowed": 1,
+                "target_forced_fallback": 0,
+                "target_included": 1,
+                "q_abs_max": np.nan,
+                "q_unstable": 0,
+                "q_value_abs_limit": float(config.q_value_abs_limit),
+                "target_q_margin": float(config.target_q_margin),
+                "stickiness_applied": 0,
+                "stickiness_reset": 1,
+                "stickiness_reset_reason": "target_policy_only",
+                "sticky_previous_label": "none",
+                "sticky_steps_left": 0,
+                "sticky_context": "target_policy_only",
+                "sticky_configured_steps": int(config.selection_stickiness_steps),
+                "sticky_switch_q_margin": float(config.selection_switch_q_margin),
+                "teacher_label": "none",
+                "teacher_stored": 0,
+                "teacher_benchmark_label": "none",
+                "teacher_buffer_size": int(self.teacher_buffer_size()),
+                "target_q_gap": np.nan,
+                "bc_coef": 0.0,
+                "target_include_prob": 1.0,
+                "cand_target_policy": 1,
+                "sel_target_policy": 1,
+                "cand_random_action": 0,
+                "sel_random_action": 0,
+            }
+            self._push_debug(debug)
+            return parent_action, parent_buffer_action
+
         if (
             not config.enabled
             or self.primitive_ensemble is None
@@ -552,6 +862,11 @@ class QSwitchSAC(SAC):
         target_phase_allowed, target_phase_debug = self._target_candidate_phase_status(
             target_env=target_env
         )
+        stickiness_context = self._stickiness_context_from_phase_debug(
+            phase_filter_debug=phase_filter_debug,
+            target_phase_debug=target_phase_debug,
+        )
+        self._sync_selection_stickiness_context(stickiness_context)
         include_target = target_step_allowed and target_phase_allowed
         target_forced_fallback = not candidates
         if include_target or target_forced_fallback:
@@ -585,6 +900,7 @@ class QSwitchSAC(SAC):
         selected_index: int
         q_values: np.ndarray
         selection_mode = "critic"
+        stickiness_debug = self._selection_stickiness_state()
         if self._qswitch_rng.random() < epsilon:
             # Exploration deliberately bypasses critic ranking, so logged Q
             # values are NaN for this step.
@@ -601,6 +917,14 @@ class QSwitchSAC(SAC):
                 selected_action = actions[selected_index]
                 q_values = np.full(actions.shape[0], np.nan, dtype=np.float64)
                 selected_label = labels[selected_index]
+            self._reset_selection_stickiness()
+            stickiness_debug = self._selection_stickiness_state()
+            stickiness_debug.update(
+                {
+                    "reset": 1,
+                    "reset_reason": "epsilon_random",
+                }
+            )
         else:
             # Normal Q-switch path: score every candidate under the same state,
             # then execute the label/action with maximal predicted return.
@@ -639,20 +963,59 @@ class QSwitchSAC(SAC):
                 ):
                     selected_index = int(non_target_index)
                     selection_mode = "target_margin_primitive_fallback"
+
+            selected_index, selection_mode, stickiness_debug = (
+                self._apply_selection_stickiness(
+                    labels=labels,
+                    q_values=q_values,
+                    selected_index=selected_index,
+                    selection_mode=selection_mode,
+                )
+            )
             selected_action = actions[selected_index]
             selected_label = labels[selected_index]
+            stickiness_applied = int(stickiness_debug.get("applied", 0))
+            sticky_challenger_label = stickiness_debug.get("challenger_label", "none")
+            sticky_challenger_q = float(stickiness_debug.get("challenger_q", np.nan))
+            sticky_previous_q = float(stickiness_debug.get("previous_q", np.nan))
+            sticky_switch_allowed = int(stickiness_debug.get("switch_allowed", 0))
+            self._commit_selection_stickiness(selected_label)
+            stickiness_debug = self._selection_stickiness_state()
+            stickiness_debug.update(
+                {
+                    "applied": stickiness_applied,
+                    "challenger_label": sticky_challenger_label,
+                    "challenger_q": sticky_challenger_q,
+                    "previous_q": sticky_previous_q,
+                    "switch_allowed": sticky_switch_allowed,
+                }
+            )
 
-        # setelah proses critic/epsilon selesai
-        teacher_index = self._best_non_target_index(
+        # BC should imitate the teacher only when a teacher action was actually
+        # executed. Otherwise, target-policy wins would still be pulled back
+        # toward primitives after they start outperforming the teacher.
+        teacher_benchmark_index = self._best_teacher_index(
             labels=labels,
             q_values=q_values,
         )
+        teacher_index = (
+            selected_index
+            if 0 <= selected_index < len(labels)
+            and self._is_teacher_label(labels[selected_index])
+            else None
+        )
         teacher_label = None
+        teacher_benchmark_label = None
+        teacher_stored = 0
         target_q_gap = np.nan
 
         if teacher_index is not None:
             teacher_label = labels[teacher_index]
             self._store_teacher_example(obs, actions[teacher_index])
+            teacher_stored = 1
+
+        if teacher_benchmark_index is not None:
+            teacher_benchmark_label = labels[teacher_benchmark_index]
 
         target_index = None
         for idx, label in enumerate(labels):
@@ -662,11 +1025,13 @@ class QSwitchSAC(SAC):
 
         if (
             target_index is not None
-            and teacher_index is not None
+            and teacher_benchmark_index is not None
             and np.isfinite(q_values[target_index])
-            and np.isfinite(q_values[teacher_index])
+            and np.isfinite(q_values[teacher_benchmark_index])
         ):
-            target_q_gap = float(q_values[target_index] - q_values[teacher_index])
+            target_q_gap = float(
+                q_values[target_index] - q_values[teacher_benchmark_index]
+            )
 
         selected_action = np.asarray(selected_action, dtype=np.float32).reshape(1, -1)
         selected_buffer_action = self.policy.scale_action(selected_action)
@@ -711,10 +1076,23 @@ class QSwitchSAC(SAC):
             ),
             "q_value_abs_limit": float(config.q_value_abs_limit),
             "target_q_margin": float(config.target_q_margin),
-            "target_include_prob": float(
-                self._target_include_probability(learning_starts)
+            "stickiness_applied": int(stickiness_debug.get("applied", 0)),
+            "stickiness_reset": int(stickiness_debug.get("reset", 0)),
+            "stickiness_reset_reason": stickiness_debug.get("reset_reason", "none"),
+            "sticky_previous_label": stickiness_debug.get("previous_label", "none"),
+            "sticky_steps_left": int(stickiness_debug.get("steps_left", 0)),
+            "sticky_context": stickiness_debug.get("context", "none"),
+            "sticky_configured_steps": int(stickiness_debug.get("configured_steps", 0)),
+            "sticky_switch_q_margin": float(
+                stickiness_debug.get("switch_q_margin", 0.0)
             ),
             "teacher_label": teacher_label if teacher_label is not None else "none",
+            "teacher_stored": int(teacher_stored),
+            "teacher_benchmark_label": (
+                teacher_benchmark_label
+                if teacher_benchmark_label is not None
+                else "none"
+            ),
             "teacher_buffer_size": int(self.teacher_buffer_size()),
             "target_q_gap": float(target_q_gap),
             "bc_coef": float(self.bc_coef()),

@@ -188,7 +188,7 @@ def parse_args() -> argparse.Namespace:
         "--resume", default=None, help="Optional target QSwitchSAC checkpoint."
     )
 
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000)
+    parser.add_argument("--total-timesteps", type=int, default=10_000_000)
     parser.add_argument("--learning-starts", type=int, default=5_000)
     parser.add_argument("--buffer-size", type=int, default=1_000_000)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -198,8 +198,8 @@ def parse_args() -> argparse.Namespace:
         choices=["future", "final", "episode"],
         default="future",
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--learning-rate", type=float, default=3e-5)
+    parser.add_argument("--gamma", type=float, default=0.98)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--ent-coef", default="0.01")
     parser.add_argument("--train-freq", type=int, default=1)
@@ -228,6 +228,12 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Consecutive target-aligned steps required before ending as success.",
     )
+    parser.add_argument(
+        "--success-distance",
+        type=float,
+        default=0.008,
+        help="Insertion success distance threshold in meters for radial and height errors.",
+    )
 
     parser.add_argument("--epsilon-initial", type=float, default=0.20)
     parser.add_argument("--epsilon-final", type=float, default=0.02)
@@ -235,8 +241,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-candidate-starts",
         type=int,
-        default=1_000_000,
+        default=100_000,
         help="First timestep where the learned target actor may enter Q-switch.",
+    )
+    parser.add_argument(
+        "--target-policy-only-starts",
+        type=int,
+        default=1_000_000,
+        help="From this timestep onward, execute only the learned target policy. Use 0 to disable.",
     )
     parser.add_argument(
         "--disable-target-phase-gate",
@@ -252,25 +264,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-q-margin",
         type=float,
-        default=1.0,
+        default=0.3,
         help="Extra Q margin required before target actor can beat a primitive.",
     )
-    parser.add_argument("--target-include-prob-final", type=float, default=0.30)
-    parser.add_argument("--target-include-prob-ramp-steps", type=int, default=700_000)
+    parser.add_argument(
+        "--selection-stickiness-steps",
+        type=int,
+        default=5,
+        help="Keep the selected Q-switch policy label for this many critic steps.",
+    )
+    parser.add_argument(
+        "--selection-switch-q-margin",
+        type=float,
+        default=0.15,
+        help="Extra Q advantage required to switch away from the sticky policy label.",
+    )
+    parser.add_argument("--target-include-prob-final", type=float, default=1.0)
+    parser.add_argument("--target-include-prob-ramp-steps", type=int, default=300_000)
 
     parser.add_argument("--disable-bc", action="store_true")
-    parser.add_argument("--bc-buffer-size", type=int, default=200_000)
+    parser.add_argument("--bc-buffer-size", type=int, default=50_000)
     parser.add_argument("--bc-batch-size", type=int, default=256)
     parser.add_argument("--bc-gradient-steps", type=int, default=1)
     parser.add_argument("--bc-start-steps", type=int, default=10_000)
-    parser.add_argument("--bc-initial-coef", type=float, default=1.0)
-    parser.add_argument("--bc-final-coef", type=float, default=0.05)
-    parser.add_argument("--bc-decay-steps", type=int, default=800_000)
-    parser.add_argument("--bc-max-grad-norm", type=float, default=10.0)
+    parser.add_argument("--bc-initial-coef", type=float, default=0.2)
+    parser.add_argument("--bc-final-coef", type=float, default=0.0)
+    parser.add_argument("--bc-decay-steps", type=int, default=200_000)
+    parser.add_argument("--bc-max-grad-norm", type=float, default=5.0)
     parser.add_argument(
         "--q-value-abs-limit",
         type=float,
-        default=5_000.0,
+        default=1_000.0,
         help="Treat selector Q values above this magnitude as unstable.",
     )
     parser.add_argument(
@@ -341,6 +365,7 @@ def build_env(args: argparse.Namespace, videos_dir: Path, name_prefix: str):
             close_angle_deg=args.manual_close_angle_deg,
             release_distance=args.manual_release_distance,
             release_angle_deg=args.manual_release_angle_deg,
+            success_distance=args.success_distance,
             success_steps_required=args.success_steps_required,
         )
         if record_video:
@@ -413,9 +438,12 @@ def build_qswitch_config(args: argparse.Namespace):
         epsilon_final=args.epsilon_final,
         epsilon_decay_steps=args.epsilon_decay_steps,
         target_candidate_starts=args.target_candidate_starts,
+        target_policy_only_starts=args.target_policy_only_starts,
         target_phase_gate=not bool(args.disable_target_phase_gate),
         target_min_lift_height=args.target_min_lift_height,
         target_q_margin=args.target_q_margin,
+        selection_stickiness_steps=args.selection_stickiness_steps,
+        selection_switch_q_margin=args.selection_switch_q_margin,
         q_value_abs_limit=args.q_value_abs_limit,
         use_target_critic_for_selection=args.selection_critic == "target",
         # Penting: epsilon tidak boleh raw random action untuk IK 6D.

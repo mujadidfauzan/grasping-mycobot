@@ -32,9 +32,13 @@ ENV_METRICS = (
     ("ee_object_dist", "task/ee_obj_d"),
     ("object_target_dist", "task/obj_tgt_d"),
     ("object_target_angle_rad", "task/obj_tgt_ang"),
+    ("object_place_radial_error", "task/place_radial"),
+    ("object_place_height_error", "task/place_height"),
+    ("object_place_angle_error", "task/place_ang"),
     ("lift_height", "task/lift_h"),
     ("lift_progress", "task/lift_p"),
     ("target_pose_aligned", "task/aligned"),
+    ("place_pose_aligned", "task/place_aligned"),
     ("success_counter", "task/succ_cnt"),
     ("terminated_success", "ep/term_succ"),
     ("terminated_lost_object", "ep/term_lost"),
@@ -59,8 +63,12 @@ QSWITCH_METRICS = (
     ("target_step_allowed", "qs/tp_step_ok"),
     ("target_phase_allowed", "qs/tp_phase_ok"),
     ("target_forced_fallback", "qs/tp_fallback"),
+    ("target_policy_only", "qs/tp_only"),
     ("q_abs_max", "qs/q_abs_max"),
     ("q_unstable", "qs/q_unstable"),
+    ("stickiness_applied", "qs/sticky_applied"),
+    ("sticky_steps_left", "qs/sticky_steps_left"),
+    ("teacher_stored", "qs/teacher_stored"),
 )
 
 PHASE_FILTER_METRICS = (

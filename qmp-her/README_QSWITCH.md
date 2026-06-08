@@ -26,14 +26,16 @@ Training memakai `MultiInputPolicy` dan observation dict:
 
 - `observation`: state flat yang juga dipakai adapter primitive insert;
 - `achieved_goal`: pose objek `[x, y, z, qw, qx, qy, qz]`;
-- `desired_goal`: pose target insert `[x, y, z, qw, qx, qy, qz]`.
+- `desired_goal`: pose target place aktual `[x, y, z, qw, qx, qy, qz]`.
 
 Gripper tidak menjadi bagian action policy. Env mandiri:
 
 - membuka gripper saat reset;
 - menutup gripper saat EE dekat objek;
-- membuka gripper saat objek sudah align dengan target insert;
-- reward benar-benar sparse: `0` hanya ketika pose objek sampai target di atas place, selain itu `-1`.
+- membuka gripper saat objek sudah align dengan target insert di atas place;
+- reward `0` hanya ketika pose objek sudah masuk ke target place
+  (`cube_place_site`), dengan radial dan tinggi default `8 mm`; pose di atas place
+  hanya menjadi trigger release.
 
 ## Contoh Run
 
@@ -47,6 +49,10 @@ python qmp-her/train_qswitch.py \
 Training env selalu reset objek di meja supaya primitive grasp benar-benar ikut
 berperan. Primitive insert tetap boleh berasal dari model `InsertTargetEnvIK`,
 tetapi env target Q-switch tidak mewarisi class `InsertTargetEnvIK`.
+
+Secara default, setelah 1.000.000 timestep rollout berpindah penuh ke target
+policy (`--target-policy-only-starts 1000000`), sehingga primitive dan scripted
+lift tidak lagi dipakai untuk memilih aksi.
 
 Video rollout otomatis direkam setiap 50.000 step ke `runs/<run-name>/videos`.
 Gunakan `--video-freq 0` untuk mematikan recording, atau ubah interval dengan
